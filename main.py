@@ -12,10 +12,10 @@ HTML_TEMPLATE = """
 <head>
     <title>Мій скорочувач посилань</title>
     <style>
-        body { font-family: sans-serif; margin: 40px; text-align: center; }
-        input[type="text"] { width: 300px; padding: 10px; margin-bottom: 10px; }
-        input[type="submit"] { padding: 10px 20px; cursor: pointer; }
-        .result { margin-top: 20px; font-size: 1.2em; font-weight: bold; color: green; }
+        body {{ font-family: sans-serif; margin: 40px; text-align: center; }}
+        input[type="text"] {{ width: 300px; padding: 10px; margin-bottom: 10px; }}
+        input[type="submit"] {{ padding: 10px 20px; cursor: pointer; }}
+        .result {{ margin-top: 20px; font-size: 1.2em; font-weight: bold; color: green; }}
     </style>
 </head>
 <body>
