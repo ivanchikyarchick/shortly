@@ -121,6 +121,34 @@ class KaterynaServer:
         if effect_name in urls and self.send_to_client:
             await self.send_to_client({"command": "play_effect_url", "url": urls[effect_name]})
 
+    async def background_scheduler(self):
+        while True:
+            now = datetime.datetime.now()
+            for item in self.schedule[:]:
+                try:
+                    dt = datetime.datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
+                    if now >= dt:
+                        self.schedule.remove(item)
+                        self.save_data("schedule.json", self.schedule)
+                        await self._play_effect("notify")
+                        await self.speak_text(f"Нагадування! {item['message']}")
+                except: self.schedule.remove(item)
+            await asyncio.sleep(20)
+
+    async def poll_telegram(self):
+        while True:
+            if not self.tg_chat_id:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates") as resp:
+                            data = await resp.json()
+                            if data.get("ok") and data["result"]:
+                                self.tg_chat_id = str(data["result"][0]["message"]["chat"]["id"])
+                                self.save_data("tg_chat.txt", self.tg_chat_id)
+                                print(f"DEBUG: [Telegram] Підключено ID: {self.tg_chat_id}")
+                except: pass
+            await asyncio.sleep(10)
+
     async def speak_text(self, text):
         if not text or not self.send_to_client: return
         print(f"DEBUG: Починаю генерацію голосу для тексту: '{text}'")
