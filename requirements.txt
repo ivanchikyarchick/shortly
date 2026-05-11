@@ -6,4 +6,6 @@ yt-dlp
 speechrecognition
 aiohttp
 edge-tts
+imageio-ffmpeg
 psutil
+websockets
