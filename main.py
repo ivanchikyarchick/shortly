@@ -15,6 +15,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
+import imageio_ffmpeg
+
+ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+os.environ["PATH"] += os.pathsep + ffmpeg_path
 
 TELEGRAM_TOKEN = "8686260697:AAGdLkMTtu0Q47DtME2ZI6wvbfAHqVcx9ws"
 RADIO_STATIONS = {
