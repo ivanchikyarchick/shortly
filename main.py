@@ -15,6 +15,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
+import os
 
 TELEGRAM_TOKEN = "8686260697:AAGdLkMTtu0Q47DtME2ZI6wvbfAHqVcx9ws"
 RADIO_STATIONS = {
@@ -28,7 +29,7 @@ os.makedirs("static", exist_ok=True)
 class KaterynaServer:
     def __init__(self):
         print("Ініціалізація серверної Катерини...")
-        self.client = genai.Client(api_key="AIzaSyDje2uaLCNgBgSDdNf7SSnlCxPJ53Sv_qY")
+        api_key = os.environ.get("GEMINI_API_KEY")
         self.ytmusic = YTMusic()
         self.recognizer = sr.Recognizer()
         
