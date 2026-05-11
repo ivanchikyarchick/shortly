@@ -15,7 +15,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
-import os
 
 TELEGRAM_TOKEN = "8686260697:AAGdLkMTtu0Q47DtME2ZI6wvbfAHqVcx9ws"
 RADIO_STATIONS = {
@@ -24,12 +23,19 @@ RADIO_STATIONS = {
     "радіо рокс": "https://online.radioroks.ua/RadioROKS",
 }
 
+# Створюємо папку для аудіо
 os.makedirs("static", exist_ok=True)
 
 class KaterynaServer:
     def __init__(self):
         print("Ініціалізація серверної Катерини...")
+        
+        # БЕЗПЕЧНЕ ЗАВАНТАЖЕННЯ КЛЮЧА
         api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("❌ КРИТИЧНА ПОМИЛКА: Не знайдено GEMINI_API_KEY у змінних оточення!")
+            
+        self.client = genai.Client(api_key=api_key)
         self.ytmusic = YTMusic()
         self.recognizer = sr.Recognizer()
         
@@ -45,10 +51,11 @@ class KaterynaServer:
         self.schedule = self.load_data("schedule.json", [])
         self.shopping_list = self.load_data("shopping_list.txt", "").splitlines()
         
+        # ПОВНИЙ СПИСОК ІНСТРУМЕНТІВ (29 штук)
         self.tools = [{"function_declarations": [
             {"name": "play_music", "description": "Шукає та вмикає музику.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}},
             {"name": "play_radio", "description": "Вмикає українське радіо.", "parameters": {"type": "OBJECT", "properties": {"station": {"type": "STRING"}}, "required": ["station"]}},
-            {"name": "stop_audio", "description": "Повністю зупиняє музику/радіо."},
+            {"name": "stop_audio", "description": "Повністю зупиняє музику/радіо, команда стоп."},
             {"name": "pause_audio", "description": "Пауза."},
             {"name": "resume_audio", "description": "Продовжити відтворення."},
             {"name": "set_volume", "description": "Гучність (1-100).", "parameters": {"type": "OBJECT", "properties": {"level": {"type": "INTEGER"}}, "required": ["level"]}},
@@ -110,37 +117,9 @@ class KaterynaServer:
         if effect_name in urls and self.send_to_client:
             await self.send_to_client({"command": "play_effect_url", "url": urls[effect_name]})
 
-    async def background_scheduler(self):
-        while True:
-            now = datetime.datetime.now()
-            for item in self.schedule[:]:
-                try:
-                    dt = datetime.datetime.strptime(item["time"], "%Y-%m-%d %H:%M")
-                    if now >= dt:
-                        self.schedule.remove(item)
-                        self.save_data("schedule.json", self.schedule)
-                        await self._play_effect("joke")
-                        await self.speak_text(f"Нагадування! {item['message']}")
-                except: self.schedule.remove(item)
-            await asyncio.sleep(20)
-
-    async def poll_telegram(self):
-        while True:
-            if not self.tg_chat_id:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates") as resp:
-                            data = await resp.json()
-                            if data.get("ok") and data["result"]:
-                                self.tg_chat_id = str(data["result"][0]["message"]["chat"]["id"])
-                                self.save_data("tg_chat.txt", self.tg_chat_id)
-                                print(f"[Telegram] Підключено ID: {self.tg_chat_id}")
-                except: pass
-            await asyncio.sleep(10)
-
     async def speak_text(self, text):
         if not text or not self.send_to_client: return
-        print(f"Катерина: {text}")
+        print(f"DEBUG: Починаю генерацію голосу для тексту: '{text}'")
         temp_speech = "static/k_speech.mp3"
         try:
             cmd = ["python", "-m", "edge_tts", "--voice", "uk-UA-PolinaNeural", "--rate", "+15%", "--volume", "+50%", "--text", text, "--write-media", temp_speech]
@@ -148,8 +127,12 @@ class KaterynaServer:
             await proc.wait()
             if os.path.exists(temp_speech):
                 url = f"{self.server_url}/static/k_speech.mp3?t={int(time.time())}"
+                print(f"DEBUG: Голос згенеровано успішно. Відправляю URL: {url}")
                 await self.send_to_client({"command": "play_tts_url", "url": url})
-        except Exception as e: print(f"Speech error: {e}")
+            else:
+                print("DEBUG: Файл k_speech.mp3 не був створений!")
+        except Exception as e: 
+            print(f"DEBUG: Speech error (можливо проблема з edge-tts або ffmpeg): {e}")
 
     async def play_music_task(self, query):
         try:
@@ -233,43 +216,56 @@ class KaterynaServer:
         except: return "Помилка пошуку."
 
     async def process_user_audio(self, audio_bytes):
+        print("DEBUG: Отримано аудіо від клієнта. Починаю розпізнавання...")
         audio_data = sr.AudioData(audio_bytes, 16000, 2)
         try:
             text = await asyncio.to_thread(self.recognizer.recognize_google, audio_data, language="uk-UA")
             await self.handle_user_text(text)
-        except sr.UnknownValueError: pass
+        except sr.UnknownValueError: 
+            print("DEBUG: Google не розпізнав слова (тиша або шум).")
+        except Exception as e:
+            print(f"DEBUG: Помилка розпізнавання: {e}")
 
     async def handle_user_text(self, text):
         text_lower = text.lower().strip()
+        print(f"DEBUG: Розпізнаний текст: '{text_lower}'")
         
         if not self.is_active:
             if "катерина" in text_lower:
                 self.is_active = True
                 text = text_lower.replace("катерина", "").strip() or "Привіт"
-                print(f"\n✅ Активація! Запит: {text}")
+                print(f"DEBUG: Катерина прокинулась! Запит: {text}")
             else:
-                print(f"🔇 [Ігнор фону]: {text}")
+                print(f"DEBUG: Ім'я 'Катерина' не знайдено, ігнорую.")
                 return
 
         await self._play_effect("thinking")
+        print("DEBUG: Ефект 'thinking' відправлено клієнту.")
 
         if not self.conversation_history:
             self.conversation_history = [{"role": "user", "parts": [{"text": "SYSTEM: " + self.get_system_instruction()}]}, {"role": "model", "parts": [{"text": "Привіт! Я готова допомагати."}]}]
         self.conversation_history.append({"role": "user", "parts": [{"text": text}]})
 
         try:
+            print("DEBUG: Відправляю запит у Gemini...")
             response = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.5-flash", contents=self.conversation_history, config={"tools": self.tools})
+            print("DEBUG: Gemini повернула відповідь!")
+            
             model_parts = response.candidates[0].content.parts or []
             full_text = ""
             tool_results = []
 
             for part in model_parts:
-                if hasattr(part, "text") and part.text: full_text += part.text
+                if hasattr(part, "text") and part.text: 
+                    full_text += part.text
                 if hasattr(part, "function_call") and part.function_call:
-                    res = await self.execute_tool(part.function_call.name, dict(part.function_call.args or {}))
-                    tool_results.append({"function_response": {"name": part.function_call.name, "response": {"result": res}}})
+                    func_name = part.function_call.name
+                    print(f"DEBUG: Gemini викликає функцію: {func_name}")
+                    res = await self.execute_tool(func_name, dict(part.function_call.args or {}))
+                    tool_results.append({"function_response": {"name": func_name, "response": {"result": res}}})
 
             if tool_results:
+                print("DEBUG: Функція виконана, відправляю результат назад у Gemini...")
                 self.conversation_history.append({"role": "model", "parts": model_parts})
                 self.conversation_history.append({"role": "user", "parts": tool_results})
                 final_resp = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.5-flash", contents=self.conversation_history, config={"tools": self.tools})
@@ -281,16 +277,22 @@ class KaterynaServer:
                 self.conversation_history.append({"role": "model", "parts": model_parts})
 
             if full_text:
+                print(f"DEBUG: Фінальний текст для озвучки: {full_text}")
                 await self.speak_text(full_text)
+            else:
+                print("DEBUG: Тексту для озвучки немає.")
                 
             if getattr(self, "pending_url", None):
+                print(f"DEBUG: Знайдено pending_url, відправляю клієнту: {self.pending_url}")
                 if self.send_to_client: await self.send_to_client({"command": "play_url", "url": self.pending_url})
                 self.pending_url = None
                 
-        except Exception as e: print(f"Помилка Gemini: {e}")
+        except Exception as e: 
+            print(f"DEBUG: ПОМИЛКА GEMINI АБО ЗАГАЛЬНА ПОМИЛКА: {e}")
 
+    # ПОВНИЙ БЛОК EXECUTE_TOOL (усі 29 функцій)
     async def execute_tool(self, name, args):
-        print(f"[Викликаю: {name}]")
+        print(f"DEBUG: Виконую інструмент {name} з аргументами {args}")
         if name == "play_music": return await self.play_music_task(args.get("query", ""))
         if name == "play_radio": 
             self.pending_url = RADIO_STATIONS.get(args.get("station", "").lower(), "https://online.hitfm.ua/HitFM")
@@ -310,7 +312,7 @@ class KaterynaServer:
             if lvl <= 10: lvl *= 10
             lvl = max(0, min(100, lvl))
             if self.send_to_client: await self.send_to_client({"command": "set_volume", "level": lvl})
-            return f"Гучність встановлено на {lvl}%."
+            return f"Гучність встановлено на {lvl} відсотків."
             
         if name == "get_time": return f"Зараз {self._get_ukrainian_date_time()}."
         if name == "get_weather": return await self.get_weather_task(args.get("city", "Бориспіль"))
@@ -394,7 +396,7 @@ class KaterynaServer:
             return f"Завантаження процесора {psutil.cpu_percent()}%, пам'ять {psutil.virtual_memory().percent}%."
             
         if name == "add_to_favorites":
-            if not self.current_song_info: return "Зараз нічого не грає."
+            if not getattr(self, "current_song_info", None): return "Зараз нічого не грає."
             if any(f.get('id') == self.current_song_info['id'] for f in self.favorites): return "Вже в обраному."
             self.favorites.append(self.current_song_info)
             self.save_data("favorites.json", self.favorites)
@@ -431,6 +433,7 @@ assistant = KaterynaServer()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Запускаємо фонові задачі
     asyncio.create_task(assistant.background_scheduler())
     asyncio.create_task(assistant.poll_telegram())
     yield
@@ -441,16 +444,18 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("ESP32 підключено!")
+    print("DEBUG: Клієнт успішно підключився по WebSocket!")
     
     host = websocket.headers.get("host", "localhost:8000")
     scheme = "https" if "onrender" in host else "http"
     assistant.server_url = f"{scheme}://{host}"
+    print(f"DEBUG: URL сервера встановлено як {assistant.server_url}")
     
     async def send_json(data):
         try:
             await websocket.send_json(data)
-        except Exception as e: pass
+        except Exception as e: 
+            print(f"DEBUG: Помилка відправки JSON: {e}")
             
     assistant.send_to_client = send_json
     await assistant._play_effect("startup")
@@ -462,14 +467,18 @@ async def websocket_endpoint(websocket: WebSocket):
             if "bytes" in message:
                 audio_buffer.extend(message["bytes"])
             elif "text" in message:
-                data = json.loads(message["text"])
-                if data.get("action") == "process_audio":
-                    if len(audio_buffer) > 0:
-                        await assistant.process_user_audio(bytes(audio_buffer))
-                        audio_buffer.clear()
-    except (WebSocketDisconnect, RuntimeError):
-        print("ESP32 відключено.")
+                try:
+                    data = json.loads(message["text"])
+                    if data.get("action") == "process_audio":
+                        if len(audio_buffer) > 0:
+                            await assistant.process_user_audio(bytes(audio_buffer))
+                            audio_buffer.clear()
+                except Exception as e:
+                    print(f"DEBUG: Отримано текст, але це не JSON. Текст: {message['text']}")
+    except (WebSocketDisconnect, RuntimeError) as e:
+        print(f"DEBUG: Клієнт відключився. Причина: {e}")
         assistant.send_to_client = None
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
