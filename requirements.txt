@@ -1,3 +1,9 @@
 fastapi
 uvicorn
-python-multipart
+google-genai
+ytmusicapi
+yt-dlp
+speechrecognition
+aiohttp
+edge-tts
+psutil
