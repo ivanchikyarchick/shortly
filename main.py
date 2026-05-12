@@ -262,7 +262,7 @@ class KaterynaServer:
         audio_filename = f"static/history/rec_{ts}.wav"
         try:
             with wave.open(audio_filename, "wb") as wf:
-                wf.setnchannels(2)
+                wf.setnchannels(1) # Змінено на 1 (Mono), бо ESP32 шле один канал
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(audio_bytes)
