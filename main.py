@@ -304,6 +304,7 @@ class KaterynaServer:
                 print(f"DEBUG: Катерина прокинулась! Запит: {text}")
             else:
                 print(f"DEBUG: Ім'я 'Катерина' не знайдено, ігнорую.")
+                if self.send_to_client: await self.send_to_client({"command": "done", "status": "no_wake_word"})
                 return
 
         await self._play_effect("thinking")
@@ -356,6 +357,7 @@ class KaterynaServer:
                 await self.speak_text(full_text)
             else:
                 print("DEBUG: Тексту для озвучки немає.")
+                if self.send_to_client: await self.send_to_client({"command": "done", "status": "no_text"})
                 
             if getattr(self, "pending_url", None):
                 print(f"DEBUG: Знайдено pending_url, відправляю клієнту: {self.pending_url}")
