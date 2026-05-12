@@ -262,12 +262,25 @@ class KaterynaServer:
         audio_filename = f"static/history/rec_{ts}.wav"
         try:
             with wave.open(audio_filename, "wb") as wf:
-                wf.setnchannels(1) # Змінено на 1 (Mono), бо ESP32 шле один канал
+                wf.setnchannels(1) # Mono
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(audio_bytes)
+            
+            # АНТИ-ШУМ та ПІДСИЛЕННЯ (AGC) через FFmpeg
+            processed_filename = audio_filename.replace(".wav", "_proc.wav")
+            # afftdn - шумодав, highpass - прибирає низький гул, loudnorm - нормалізує гучність
+            cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "afftdn,highpass=f=200,loudnorm", processed_filename]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await proc.wait()
+            
+            if os.path.exists(processed_filename):
+                os.replace(processed_filename, audio_filename)
+                with open(audio_filename, "rb") as f:
+                    f.seek(44) # Пропускаємо WAV заголовок
+                    audio_bytes = f.read()
         except Exception as e:
-            print(f"DEBUG: Помилка збереження аудіо: {e}")
+            print(f"DEBUG: Помилка обробки аудіо (шумодав/AGC): {e}")
 
         audio_data = sr.AudioData(audio_bytes, 16000, 2)
         try:
