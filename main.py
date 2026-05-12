@@ -288,8 +288,10 @@ class KaterynaServer:
             await self.handle_user_text(text, ts)
         except sr.UnknownValueError: 
             print("DEBUG: Google не розпізнав слова (тиша або шум).")
+            if self.send_to_client: await self.send_to_client({"command": "error", "message": "speech_not_recognized"})
         except Exception as e:
             print(f"DEBUG: Помилка розпізнавання: {e}")
+            if self.send_to_client: await self.send_to_client({"command": "error", "message": str(e)})
 
     async def handle_user_text(self, text, history_id=None):
         text_lower = text.lower().strip()
@@ -313,7 +315,7 @@ class KaterynaServer:
 
         try:
             print("DEBUG: Відправляю запит у Gemini...")
-            response = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.5-flash", contents=self.conversation_history, config={"tools": self.tools})
+            response = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.0-flash", contents=self.conversation_history, config={"tools": self.tools})
             print("DEBUG: Gemini повернула відповідь!")
             
             model_parts = response.candidates[0].content.parts or []
@@ -333,7 +335,7 @@ class KaterynaServer:
                 print("DEBUG: Функція виконана, відправляю результат назад у Gemini...")
                 self.conversation_history.append({"role": "model", "parts": model_parts})
                 self.conversation_history.append({"role": "user", "parts": tool_results})
-                final_resp = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.5-flash", contents=self.conversation_history, config={"tools": self.tools})
+                final_resp = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.0-flash", contents=self.conversation_history, config={"tools": self.tools})
                 final_parts = final_resp.candidates[0].content.parts or []
                 for p in final_parts:
                     if hasattr(p, "text") and p.text: full_text += p.text
@@ -362,6 +364,7 @@ class KaterynaServer:
                 
         except Exception as e: 
             print(f"DEBUG: ПОМИЛКА GEMINI АБО ЗАГАЛЬНА ПОМИЛКА: {e}")
+            if self.send_to_client: await self.send_to_client({"command": "error", "message": "gemini_error"})
 
     # ПОВНИЙ БЛОК EXECUTE_TOOL (усі 29 функцій)
     async def execute_tool(self, name, args):
