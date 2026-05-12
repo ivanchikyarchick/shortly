@@ -280,10 +280,10 @@ class KaterynaServer:
                 wf.setframerate(16000)
                 wf.writeframes(audio_bytes)
             
-            # АНТИ-ШУМ: FFT Noise Reduction + Voice Bandpass (300-3400Hz)
+            # АНТИ-ШУМ: FFT Noise Reduction + Voice Bandpass (100-3400Hz)
             processed_filename = audio_filename.replace(".wav", "_proc.wav")
-            # afftdn=nr=10 - приглушує шум на 10дБ, highpass/lowpass виділяють голос
-            cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "afftdn=nr=10,highpass=f=300,lowpass=f=3400", processed_filename]
+            # nr=5 - легше приглушення шуму, щоб не втратити голос
+            cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "afftdn=nr=5,highpass=f=100,lowpass=f=3400", processed_filename]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             await proc.wait()
             
