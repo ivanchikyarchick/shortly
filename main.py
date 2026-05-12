@@ -58,7 +58,8 @@ class KaterynaServer:
         self.shopping_list = self.load_data("shopping_list.txt", "").splitlines()
         self.bt_speaker = self.load_data("bt_speaker.txt", "JBL_Flip_5")
         
-        # Історія розмов
+        # Список підключених клієнтів (ESP32 + Веб)
+        self.clients = []
         self.history_file = "static/history.json"
         self.history_data = self.load_data(self.history_file, [])
         os.makedirs("static/history", exist_ok=True)
@@ -93,8 +94,19 @@ class KaterynaServer:
             {"name": "add_to_favorites", "description": "Додати поточну пісню в улюблені."},
             {"name": "play_favorites", "description": "Грати випадкову пісню з обраного."},
             {"name": "remember_name", "description": "Запам'ятати ім'я користувача.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
-            {"name": "get_system_info", "description": "Стан процесора та пам'яті сервера."}
+            {"name"ф: "get_system_info", "description": "Стан процесора та пам'яті сервера."}
         ]}]
+
+    async def broadcast(self, data):
+        """Відправляє дані всім підключеним клієнтам (ESP32 та браузерам)"""
+        disconnected = []
+        for client in self.clients:
+            try:
+                await client.send_json(data)
+            except:
+                disconnected.append(client)
+        for client in disconnected:
+            if client in self.clients: self.clients.remove(client)
 
     def load_data(self, filename, default):
         try:
@@ -168,7 +180,7 @@ class KaterynaServer:
             if os.path.exists(temp_speech):
                 url = f"{self.server_url}/static/k_speech.mp3?t={int(time.time())}"
                 print(f"DEBUG: Голос згенеровано успішно. Відправляю URL: {url}")
-                await self.send_to_client({"command": "play_tts_url", "url": url})
+                await self.broadcast({"command": "play_tts_url", "url": url})
             else:
                 print("DEBUG: Файл k_speech.mp3 не був створений!")
         except Exception as e: 
@@ -697,6 +709,10 @@ HTML_TEMPLATE = """
     <header>
         <h1><div class="status-dot"></div> Kateryna AI Chat</h1>
         <div style="display: flex; align-items: center; gap: 15px;">
+            <div id="web-speaker-btn" onclick="toggleWebSpeaker()" title="Режим колонки (озвучка на сайті)" style="cursor:pointer; color:var(--dim-text); display:flex; align-items:center; gap:5px; font-size:14px; background:rgba(255,255,255,0.05); padding:5px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.1);">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                <span>Озвучка: OFF</span>
+            </div>
             <div class="refresh-status" id="last-update">Оновлення...</div>
             <button onclick="toggleSettings()" style="background:none; border:none; cursor:pointer; color:var(--text-color);">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -806,6 +822,45 @@ HTML_TEMPLATE = """
             modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
         }
 
+        let webSpeakerEnabled = false;
+        let ws;
+
+        function toggleWebSpeaker() {
+            webSpeakerEnabled = !webSpeakerEnabled;
+            const btn = document.getElementById('web-speaker-btn');
+            if (webSpeakerEnabled) {
+                btn.style.color = 'var(--accent-color)';
+                btn.style.borderColor = 'var(--accent-color)';
+                btn.querySelector('span').innerText = 'Озвучка: ON';
+                initWebSocket();
+                // Потрібно клікнути по сторінці, щоб браузер дозволив звук
+                const audio = new Audio(); 
+                audio.play().catch(() => {});
+            } else {
+                btn.style.color = 'var(--dim-text)';
+                btn.style.borderColor = 'rgba(255,255,255,0.1)';
+                btn.querySelector('span').innerText = 'Озвучка: OFF';
+                if (ws) ws.close();
+            }
+        }
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            ws.onmessage = (event) => {
+                if (!webSpeakerEnabled) return;
+                const data = JSON.parse(event.data);
+                if (data.command === 'play_tts_url' || data.command === 'play_url' || data.command === 'play_effect_url') {
+                    console.log("Playing from WebSocket:", data.url);
+                    const audio = new Audio(data.url);
+                    audio.play();
+                }
+            };
+            ws.onclose = () => {
+                if (webSpeakerEnabled) setTimeout(initWebSocket, 2000);
+            };
+        }
+
         loadHistory();
         setInterval(loadHistory, 3000);
     </script>
@@ -850,7 +905,10 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception as e: 
             print(f"DEBUG: Помилка відправки JSON: {e}")
             
-    assistant.send_to_client = send_json
+    # Використовуємо broadcast замість send_to_client
+    assistant.send_to_client = assistant.broadcast
+    assistant.clients.append(websocket)
+    
     await assistant._play_effect("startup")
     
     # Відправляємо назву колонки при підключенні
@@ -873,7 +931,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     print(f"DEBUG: Отримано текст, але це не JSON. Текст: {message['text']}")
     except (WebSocketDisconnect, RuntimeError) as e:
         print(f"DEBUG: Клієнт відключився. Причина: {e}")
-        assistant.send_to_client = None
+        if websocket in assistant.clients: assistant.clients.remove(websocket)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
