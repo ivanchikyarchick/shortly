@@ -200,26 +200,36 @@ class KaterynaServer:
             if not query or query.strip().lower() in ["якусь пісню", "музику", "щось"]:
                 query = "популярна українська музика 2024"
             
-            print(f"DEBUG: Гнучкий пошук музики: '{query}'")
+            print(f"DEBUG: Пошук музики: '{query}'")
             results = await asyncio.to_thread(self.ytmusic.search, query, filter="songs")
             if not results: 
-                return "На жаль, навіть зі своєю магією я не знайшла такої пісні. Спробуй назвати іншого автора або назву?"
+                return "Обшукала все, але нічого схожого не знайшла. Може, уточниш назву?"
             
-            # Зберігаємо результати для подальшого вибору за номером
             self.last_search_results = results[:3]
             
-            options = []
-            for i, r in enumerate(self.last_search_results):
-                options.append(f"{i+1}. {r['title']} - {r['artists'][0]['name']}")
+            # АВТО-ЗАПУСК першого результату
+            best = results[0]
+            v_id = best['videoId']
+            self.current_song_info = {"title": best['title'], "artist": best['artists'][0]['name'], "id": v_id}
             
+            url = f"https://www.youtube.com/watch?v={v_id}"
+            def get_stream_url():
+                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl: return ydl.extract_info(url, download=False)['url']
+            
+            self.pending_url = await asyncio.to_thread(get_stream_url)
+            
+            options_str = ", ".join([f"{i+1}. {r['title']}" for i, r in enumerate(results[:3])])
             return {
-                "status": "multiple_options",
-                "options": options,
-                "hint": "Запропонуй користувачу вибрати номер (1, 2 або 3) або скажи, що вмикаєш найбільш схожу пісню (варіант 1)."
+                "status": "playing",
+                "title": best['title'],
+                "artist": best['artists'][0]['name'],
+                "alternatives": options_str,
+                "note": "Ти вже ввімкнула першу пісню. Скажи про це і згадай інші варіанти, якщо вони цікаві."
             }
         except Exception as e: 
-            print(f"DEBUG: Помилка пошуку музики: {e}")
-            return "Ой, пошук зламався. Спробуй ще раз, будь ласка."
+            print(f"DEBUG: Помилка музики: {e}")
+            return "Ой, технічна заминка з музикою. Спробуй ще раз!"
 
     async def play_option_task(self, index):
         try:
