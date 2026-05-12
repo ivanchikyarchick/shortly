@@ -94,7 +94,7 @@ class KaterynaServer:
             {"name": "add_to_favorites", "description": "Додати поточну пісню в улюблені."},
             {"name": "play_favorites", "description": "Грати випадкову пісню з обраного."},
             {"name": "remember_name", "description": "Запам'ятати ім'я користувача.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
-            {"name"ф: "get_system_info", "description": "Стан процесора та пам'яті сервера."}
+            {"name": "get_system_info", "description": "Стан процесора та пам'яті сервера."}
         ]}]
 
     async def broadcast(self, data):
