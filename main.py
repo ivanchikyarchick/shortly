@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
 import imageio_ffmpeg
+import wave
+from fastapi.responses import HTMLResponse
 
 ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 os.environ["PATH"] += os.pathsep + ffmpeg_path
@@ -54,6 +56,11 @@ class KaterynaServer:
         self.favorites = self.load_data("favorites.json", [])
         self.schedule = self.load_data("schedule.json", [])
         self.shopping_list = self.load_data("shopping_list.txt", "").splitlines()
+        
+        # Історія розмов
+        self.history_file = "static/history.json"
+        self.history_data = self.load_data(self.history_file, [])
+        os.makedirs("static/history", exist_ok=True)
         
         # ПОВНИЙ СПИСОК ІНСТРУМЕНТІВ (29 штук)
         self.tools = [{"function_declarations": [
@@ -249,16 +256,42 @@ class KaterynaServer:
 
     async def process_user_audio(self, audio_bytes):
         print("DEBUG: Отримано аудіо від клієнта. Починаю розпізнавання...")
+        
+        # Зберігаємо аудіо файл
+        ts = int(time.time())
+        audio_filename = f"static/history/rec_{ts}.wav"
+        try:
+            with wave.open(audio_filename, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(audio_bytes)
+        except Exception as e:
+            print(f"DEBUG: Помилка збереження аудіо: {e}")
+
         audio_data = sr.AudioData(audio_bytes, 16000, 2)
         try:
             text = await asyncio.to_thread(self.recognizer.recognize_google, audio_data, language="uk-UA")
-            await self.handle_user_text(text)
+            
+            # Створюємо запис в історії (поки без відповіді бота)
+            entry = {
+                "id": ts,
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "user_text": text,
+                "bot_text": "...",
+                "audio_url": f"/static/history/rec_{ts}.wav"
+            }
+            self.history_data.insert(0, entry)
+            self.history_data = self.history_data[:100] # Обмежуємо останніми 100
+            self.save_data(self.history_file, self.history_data)
+            
+            await self.handle_user_text(text, ts)
         except sr.UnknownValueError: 
             print("DEBUG: Google не розпізнав слова (тиша або шум).")
         except Exception as e:
             print(f"DEBUG: Помилка розпізнавання: {e}")
 
-    async def handle_user_text(self, text):
+    async def handle_user_text(self, text, history_id=None):
         text_lower = text.lower().strip()
         print(f"DEBUG: Розпізнаний текст: '{text_lower}'")
         
@@ -310,6 +343,14 @@ class KaterynaServer:
 
             if full_text:
                 print(f"DEBUG: Фінальний текст для озвучки: {full_text}")
+                # Оновлюємо історію відповіддю бота
+                if history_id:
+                    for entry in self.history_data:
+                        if entry["id"] == history_id:
+                            entry["bot_text"] = full_text
+                            break
+                    self.save_data(self.history_file, self.history_data)
+                
                 await self.speak_text(full_text)
             else:
                 print("DEBUG: Тексту для озвучки немає.")
@@ -472,6 +513,263 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kateryna AI Chat History</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0e14;
+            --chat-bg: #161b22;
+            --user-bubble: #238636;
+            --bot-bubble: #21262d;
+            --text-color: #e6edf3;
+            --accent-color: #58a6ff;
+            --dim-text: #8b949e;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        header {
+            padding: 15px 20px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        header h1 {
+            font-size: 1.2rem;
+            margin: 0;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            background: #238636;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #238636;
+        }
+
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            scrollbar-width: thin;
+        }
+
+        .message-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .bubble {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            position: relative;
+        }
+
+        .user-message {
+            align-self: flex-end;
+            background-color: var(--user-bubble);
+            border-bottom-right-radius: 4px;
+        }
+
+        .bot-message {
+            align-self: flex-start;
+            background-color: var(--bot-bubble);
+            border-bottom-left-radius: 4px;
+            border: 1px solid #30363d;
+        }
+
+        .meta {
+            font-size: 0.75rem;
+            color: var(--dim-text);
+            margin: 4px 10px;
+        }
+
+        .user-group .meta { text-align: right; }
+
+        .audio-control {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0,0,0,0.2);
+            padding: 8px 12px;
+            border-radius: 12px;
+        }
+
+        .play-btn {
+            background: var(--accent-color);
+            border: none;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: white;
+            transition: transform 0.1s;
+        }
+
+        .play-btn:active { transform: scale(0.9); }
+
+        .wave-visual {
+            flex: 1;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .wave-bar {
+            flex: 1;
+            height: 30%;
+            background: var(--dim-text);
+            border-radius: 1px;
+        }
+
+        .refresh-status {
+            font-size: 0.8rem;
+            color: var(--dim-text);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><div class="status-dot"></div> Kateryna AI Chat</h1>
+        <div class="refresh-status" id="last-update">Оновлення...</div>
+    </header>
+
+    <div id="chat-container">
+        <!-- Messages will be injected here -->
+    </div>
+
+    <script>
+        let lastId = null;
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/history');
+                const data = await response.json();
+                const container = document.getElementById('chat-container');
+                
+                // Check if we need to re-render
+                if (data.length > 0 && data[0].id === lastId) return;
+                lastId = data.length > 0 ? data[0].id : null;
+
+                container.innerHTML = '';
+                
+                if (data.length === 0) {
+                    container.innerHTML = '<div style="text-align:center; color:var(--dim-text); margin-top:50px;">Почніть розмову з Катериною...</div>';
+                    return;
+                }
+
+                // Reverse data for chronological chat flow (oldest at top)
+                [...data].reverse().forEach(item => {
+                    // User Group
+                    const userGroup = document.createElement('div');
+                    userGroup.className = 'message-group user-group';
+                    userGroup.innerHTML = `
+                        <div class="bubble user-message">
+                            ${item.user_text}
+                            <div class="audio-control">
+                                <button class="play-btn" onclick="playAudio('${item.audio_url}', this)">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                </button>
+                                <div class="wave-visual">
+                                    ${Array(15).fill().map(() => `<div class="wave-bar" style="height:${Math.random()*80+20}%"></div>`).join('')}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="meta">${item.time}</div>
+                    `;
+                    container.appendChild(userGroup);
+
+                    // Bot Group (if response exists)
+                    if (item.bot_text && item.bot_text !== "...") {
+                        const botGroup = document.createElement('div');
+                        botGroup.className = 'message-group';
+                        botGroup.innerHTML = `
+                            <div class="bubble bot-message">${item.bot_text}</div>
+                            <div class="meta">Катерина</div>
+                        `;
+                        container.appendChild(botGroup);
+                    }
+                });
+
+                container.scrollTop = container.scrollHeight;
+                document.getElementById('last-update').innerText = 'Останнє оновлення: ' + new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Error loading history:', error);
+            }
+        }
+
+        function playAudio(url, btn) {
+            const audio = new Audio(url);
+            const originalIcon = btn.innerHTML;
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+            audio.play();
+            audio.onended = () => btn.innerHTML = originalIcon;
+        }
+
+        loadHistory();
+        setInterval(loadHistory, 3000);
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+async def get_index():
+    return HTML_TEMPLATE
+
+@app.get("/chat", response_class=HTMLResponse)
+async def get_chat():
+    return HTML_TEMPLATE
+
+@app.get("/api/history")
+async def get_history():
+    return assistant.history_data
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
