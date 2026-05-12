@@ -56,6 +56,7 @@ class KaterynaServer:
         self.favorites = self.load_data("favorites.json", [])
         self.schedule = self.load_data("schedule.json", [])
         self.shopping_list = self.load_data("shopping_list.txt", "").splitlines()
+        self.bt_speaker = self.load_data("bt_speaker.txt", "JBL_Flip_5")
         
         # Історія розмов
         self.history_file = "static/history.json"
@@ -695,8 +696,27 @@ HTML_TEMPLATE = """
 <body>
     <header>
         <h1><div class="status-dot"></div> Kateryna AI Chat</h1>
-        <div class="refresh-status" id="last-update">Оновлення...</div>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <div class="refresh-status" id="last-update">Оновлення...</div>
+            <button onclick="toggleSettings()" style="background:none; border:none; cursor:pointer; color:var(--text-color);">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+        </div>
     </header>
+
+    <div id="settings-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center;">
+        <div style="background:var(--chat-bg); padding:30px; border-radius:20px; width:90%; max-width:400px; border:1px solid #30363d;">
+            <h2 style="margin-top:0;">Налаштування</h2>
+            <div style="margin-bottom:20px;">
+                <label style="display:block; margin-bottom:8px; color:var(--dim-text);">Назва Bluetooth колонки:</label>
+                <input type="text" id="bt-name" value="JBL_Flip_5" style="width:100%; padding:10px; background:#0b0e14; border:1px solid #30363d; color:white; border-radius:8px; box-sizing:border-box;">
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button onclick="saveSettings()" style="flex:1; padding:10px; background:var(--accent-color); border:none; color:white; border-radius:8px; cursor:pointer; font-weight:600;">Зберегти</button>
+                <button onclick="toggleSettings()" style="flex:1; padding:10px; background:#30363d; border:none; color:white; border-radius:8px; cursor:pointer;">Закрити</button>
+            </div>
+        </div>
+    </div>
 
     <div id="chat-container">
         <!-- Messages will be injected here -->
@@ -770,6 +790,22 @@ HTML_TEMPLATE = """
             audio.onended = () => btn.innerHTML = originalIcon;
         }
 
+        async function saveSettings() {
+            const name = document.getElementById('bt-name').value;
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bt_speaker: name})
+            });
+            toggleSettings();
+            alert('Налаштування надіслано на ESP32!');
+        }
+
+        function toggleSettings() {
+            const modal = document.getElementById('settings-modal');
+            modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
+        }
+
         loadHistory();
         setInterval(loadHistory, 3000);
     </script>
@@ -789,6 +825,15 @@ async def get_chat():
 async def get_history():
     return assistant.history_data
 
+@app.post("/api/settings")
+async def save_settings(data: dict):
+    if "bt_speaker" in data:
+        assistant.bt_speaker = data["bt_speaker"]
+        assistant.save_data("bt_speaker.txt", assistant.bt_speaker)
+        if assistant.send_to_client:
+            await assistant.send_to_client({"command": "set_bt_speaker", "name": assistant.bt_speaker})
+    return {"status": "ok"}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -807,6 +852,9 @@ async def websocket_endpoint(websocket: WebSocket):
             
     assistant.send_to_client = send_json
     await assistant._play_effect("startup")
+    
+    # Відправляємо назву колонки при підключенні
+    await send_json({"command": "set_bt_speaker", "name": assistant.bt_speaker})
     
     audio_buffer = bytearray()
     try:
