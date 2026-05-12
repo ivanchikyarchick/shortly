@@ -93,6 +93,7 @@ class KaterynaServer:
             {"name": "read_notes", "description": "Прочитати останні нотатки."},
             {"name": "add_to_favorites", "description": "Додати поточну пісню в улюблені."},
             {"name": "play_favorites", "description": "Грати випадкову пісню з обраного."},
+            {"name": "play_option", "description": "Грати вибраний варіант музики за його номером (1, 2 або 3).", "parameters": {"type": "OBJECT", "properties": {"index": {"type": "INTEGER"}}, "required": ["index"]}},
             {"name": "remember_name", "description": "Запам'ятати ім'я користувача.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
             {"name": "get_system_info", "description": "Стан процесора та пам'яті сервера."}
         ]}]
@@ -129,7 +130,15 @@ class KaterynaServer:
         return f"{days[now.weekday()]}, {now.day} {months[now.month - 1]} {now.year}, {now.hour:02d}:{now.minute:02d}"
 
     def get_system_instruction(self):
-        return f"Тебе звати Катерина. Власник: {self.user_name}.\nТи — професійна смарт-колонка. Працюєш через WebSocket з ESP32.\n1. Спочатку викликай функцію, потім відповідай.\n2. Коли вмикаєш музику, КАЖИ яку.\n3. Будь лаконічною. Час: {self._get_ukrainian_date_time()}"
+        return f"""Тебе звати Катерина. Твій власник — {self.user_name}.
+Ти — харизматична, розумна та злегка іронічна смарт-помічниця. Твій стиль схожий на сучасні AI-станції: ти не просто робот, ти особистість.
+
+Твої правила гри:
+1. Будь живою: використовуй легкий гумор, емоції та цікаві факти. Не будь сухою.
+2. Музичний експерт: якщо ти не знайшла точно ту пісню, знайди найкращу альтернативу. Якщо пошук повертає кілька варіантів (status: multiple_options), запропонуй користувачу вибрати номер (1, 2 або 3) або скажи, що вмикаєш найбільш схожу пісню (варіант 1) і вмикай її за допомогою play_option(index=1).
+3. Лаконічність: не пиши мемуари, відповідай влучно, але з душею.
+4. Порядок: спочатку викликай інструмент (якщо треба), а потім коментуй дію.
+Поточний час: {self._get_ukrainian_date_time()}"""
 
     async def _play_effect(self, effect_name):
         urls = {
@@ -190,20 +199,47 @@ class KaterynaServer:
         try:
             if not query or query.strip().lower() in ["якусь пісню", "музику", "щось"]:
                 query = "популярна українська музика 2024"
+            
+            print(f"DEBUG: Гнучкий пошук музики: '{query}'")
             results = await asyncio.to_thread(self.ytmusic.search, query, filter="songs")
-            if not results: return "Пісню не знайдено."
+            if not results: 
+                return "На жаль, навіть зі своєю магією я не знайшла такої пісні. Спробуй назвати іншого автора або назву?"
             
-            v_id = results[0]['videoId']
-            self.current_song_info = {"title": results[0]['title'], "artist": results[0]['artists'][0]['name'], "id": v_id}
+            # Зберігаємо результати для подальшого вибору за номером
+            self.last_search_results = results[:3]
+            
+            options = []
+            for i, r in enumerate(self.last_search_results):
+                options.append(f"{i+1}. {r['title']} - {r['artists'][0]['name']}")
+            
+            return {
+                "status": "multiple_options",
+                "options": options,
+                "hint": "Запропонуй користувачу вибрати номер (1, 2 або 3) або скажи, що вмикаєш найбільш схожу пісню (варіант 1)."
+            }
+        except Exception as e: 
+            print(f"DEBUG: Помилка пошуку музики: {e}")
+            return "Ой, пошук зламався. Спробуй ще раз, будь ласка."
+
+    async def play_option_task(self, index):
+        try:
+            idx = int(index) - 1
+            if not getattr(self, "last_search_results", None) or idx < 0 or idx >= len(self.last_search_results):
+                return "Вибач, я вже забула ті варіанти. Можеш ще раз сказати, що знайти?"
+            
+            song = self.last_search_results[idx]
+            v_id = song['videoId']
+            self.current_song_info = {"title": song['title'], "artist": song['artists'][0]['name'], "id": v_id}
+            
             url = f"https://www.youtube.com/watch?v={v_id}"
-            
             def get_stream_url():
                 ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: return ydl.extract_info(url, download=False)['url']
             
             self.pending_url = await asyncio.to_thread(get_stream_url)
-            return f"Знайшла: {results[0]['title']} від {results[0]['artists'][0]['name']}."
-        except Exception as e: return "Помилка при пошуку музики."
+            return f"Супер вибір! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
+        except Exception as e:
+            return "Помилка при спробі ввімкнути цей варіант."
 
     async def get_weather_task(self, city):
         try:
@@ -280,10 +316,9 @@ class KaterynaServer:
                 wf.setframerate(16000)
                 wf.writeframes(audio_bytes)
             
-            # АНТИ-ШУМ: FFT Noise Reduction + Voice Bandpass (100-3400Hz)
+            # ШВИДКА ОБРОБКА: Тільки highpass (прибирає гул)
             processed_filename = audio_filename.replace(".wav", "_proc.wav")
-            # nr=5 - легше приглушення шуму, щоб не втратити голос
-            cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "afftdn=nr=5,highpass=f=100,lowpass=f=3400", processed_filename]
+            cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "highpass=f=200", processed_filename]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             await proc.wait()
             
@@ -398,6 +433,7 @@ class KaterynaServer:
     async def execute_tool(self, name, args):
         print(f"DEBUG: Виконую інструмент {name} з аргументами {args}")
         if name == "play_music": return await self.play_music_task(args.get("query", ""))
+        if name == "play_option": return await self.play_option_task(args.get("index", 1))
         if name == "play_radio": 
             self.pending_url = RADIO_STATIONS.get(args.get("station", "").lower(), "https://online.hitfm.ua/HitFM")
             return f"Вмикаю радіо."
