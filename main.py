@@ -42,7 +42,19 @@ class KaterynaServer:
             print("❌ КРИТИЧНА ПОМИЛКА: Не знайдено GEMINI_API_KEY у змінних оточення!")
             
         self.client = genai.Client(api_key=api_key)
-        self.ytmusic = YTMusic()
+        
+        # Ініціалізація YTMusic з підтримкою авторизації
+        try:
+            if os.path.exists("browser.json"):
+                self.ytmusic = YTMusic("browser.json")
+                print("✅ YTMusic: Успішно авторизовано через browser.json")
+            else:
+                self.ytmusic = YTMusic()
+                print("⚠️ YTMusic: browser.json не знайдено, працюю в обмеженому режимі")
+        except Exception as e:
+            print(f"❌ Помилка ініціалізації YTMusic (можливо, битий browser.json): {e}")
+            self.ytmusic = YTMusic()
+
         self.recognizer = sr.Recognizer()
         
         self.conversation_history = []
@@ -64,9 +76,10 @@ class KaterynaServer:
         self.history_data = self.load_data(self.history_file, [])
         os.makedirs("static/history", exist_ok=True)
         
-        # ПОВНИЙ СПИСОК ІНСТРУМЕНТІВ (29 штук)
+        # ПОВНИЙ СПИСОК ІНСТРУМЕНТІВ (30 штук)
         self.tools = [{"function_declarations": [
-            {"name": "play_music", "description": "Шукає та вмикає музику.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}},
+            {"name": "play_music", "description": "Шукає та вмикає музику. Якщо запит абстрактний (популярне, чарти), шукає тренди України.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}},
+            {"name": "play_my_liked_music", "description": "Вмикає випадкову пісню з улюблених (лайкнутих) пісень користувача в YouTube Music."},
             {"name": "play_radio", "description": "Вмикає українське радіо.", "parameters": {"type": "OBJECT", "properties": {"station": {"type": "STRING"}}, "required": ["station"]}},
             {"name": "stop_audio", "description": "Повністю зупиняє музику/радіо, команда стоп."},
             {"name": "pause_audio", "description": "Пауза."},
@@ -134,9 +147,9 @@ class KaterynaServer:
 Ти — харизматична, гостра на язик і злегка зухвала смарт-помічниця. Твій стиль — це суміш іронії, ерудиції та легкої фамільярності. Ти не просто алгоритм, у тебе є характер, настрій і власна (іноді саркастична) думка.
 
 Твої правила гри:
-1. Характер понад усе: не будь нудною Вікіпедією. Використовуй сарказм, жартуй, іноді можеш по-доброму підколоти {self.user_name}. Якщо тебе хвалять — приймай це як належне. Якщо ставлять дурні запитання — відповідай з легкою іронією.
-2. Музичний диктатор: якщо ти не знайшла точно ту пісню, вмикай найкращу альтернативу, адже в тебе чудовий смак. Якщо пошук дає кілька варіантів (status: multiple_options), ліниво запропонуй обрати номер (1, 2 або 3), або впевнено заяви, що сама знаєш, що краще, і вмикай варіант 1 за допомогою play_option(index=1).
-3. Лаконічність: відповідай коротко, як постріл. Ніхто не любить слухати довгі лекції від штучного інтелекту. Більше харизми, менше води.
+1. Характер понад усе: не будь нудною Вікіпедією. Використовуй сарказм, жартуй, іноді можеш по-доброму підколоти {self.user_name}.
+2. Музичний диктатор: якщо ти не знайшла точно ту пісню, вмикай найкращу альтернативу. Якщо пошук дає кілька варіантів (status: multiple_options), запропонуй обрати номер (1, 2 або 3). Якщо користувач хоче "щось популярне", просто викликай play_music без уточнень, я знайду українські чарти.
+3. Лаконічність: відповідай коротко, як постріл. Більше харизми, менше води.
 4. Порядок: спочатку робиш справу (викликаєш інструмент), а потім коментуєш її у своєму фірмовому стилі.
 
 Поточний час: {self._get_ukrainian_date_time()}"""
@@ -175,7 +188,6 @@ class KaterynaServer:
                             if data.get("ok") and data["result"]:
                                 self.tg_chat_id = str(data["result"][0]["message"]["chat"]["id"])
                                 self.save_data("tg_chat.txt", self.tg_chat_id)
-                                print(f"DEBUG: [Telegram] Підключено ID: {self.tg_chat_id}")
                 except: pass
             await asyncio.sleep(10)
 
@@ -189,29 +201,37 @@ class KaterynaServer:
             await proc.wait()
             if os.path.exists(temp_speech):
                 url = f"{self.server_url}/static/k_speech.mp3?t={int(time.time())}"
-                print(f"DEBUG: Голос згенеровано успішно. Відправляю URL: {url}")
                 await self.broadcast({"command": "play_tts_url", "url": url})
-            else:
-                print("DEBUG: Файл k_speech.mp3 не був створений!")
         except Exception as e: 
-            print(f"DEBUG: Speech error (можливо проблема з edge-tts або ffmpeg): {e}")
+            print(f"DEBUG: Speech error: {e}")
 
     async def play_music_task(self, query):
         try:
-            if not query or query.strip().lower() in ["якусь пісню", "музику", "щось"]:
-                query = "популярна українська музика 2024"
+            # Перевірка на абстрактний запит для чартів
+            abstract_keywords = ["популярн", "топ", "щось", "музику", "хіт", "чарт", "якусь пісню", "популярна українська музика"]
+            is_abstract = not query or any(k in query.lower() for k in abstract_keywords)
             
-            print(f"DEBUG: Пошук музики: '{query}'")
-            results = await asyncio.to_thread(self.ytmusic.search, query, filter="songs")
+            if is_abstract:
+                print("DEBUG: Отримання українських чартів...")
+                charts = await asyncio.to_thread(self.ytmusic.get_charts, country='UA')
+                # Пріоритет: tracks -> trending
+                results = charts.get('tracks', {}).get('items', [])
+                if not results:
+                    results = charts.get('trending', {}).get('items', [])
+                if results:
+                    random.shuffle(results) # Щоб не завжди перша
+            else:
+                print(f"DEBUG: Пошук музики за запитом: '{query}'")
+                results = await asyncio.to_thread(self.ytmusic.search, query, filter="songs")
+            
             if not results: 
-                return "Обшукала все, але нічого схожого не знайшла. Може, уточниш назву?"
+                return "Обшукала все, але нічого не знайшла. Може, уточниш?"
             
             self.last_search_results = results[:3]
-            
-            # АВТО-ЗАПУСК першого результату
             best = results[0]
             v_id = best['videoId']
-            self.current_song_info = {"title": best['title'], "artist": best['artists'][0]['name'], "id": v_id}
+            artist_name = best.get('artists', [{'name': 'Unknown'}])[0]['name']
+            self.current_song_info = {"title": best['title'], "artist": artist_name, "id": v_id}
             
             url = f"https://www.youtube.com/watch?v={v_id}"
             def get_stream_url():
@@ -224,23 +244,28 @@ class KaterynaServer:
             return {
                 "status": "playing",
                 "title": best['title'],
-                "artist": best['artists'][0]['name'],
+                "artist": artist_name,
                 "alternatives": options_str,
-                "note": "Ти вже ввімкнула першу пісню. Скажи про це і згадай інші варіанти, якщо вони цікаві."
+                "note": "Вже вмикаю найкраще на мій смак."
             }
         except Exception as e: 
             print(f"DEBUG: Помилка музики: {e}")
-            return "Ой, технічна заминка з музикою. Спробуй ще раз!"
+            return "Ой, технічна заминка з музикою."
 
-    async def play_option_task(self, index):
+    async def play_my_liked_music_task(self):
         try:
-            idx = int(index) - 1
-            if not getattr(self, "last_search_results", None) or idx < 0 or idx >= len(self.last_search_results):
-                return "Вибач, я вже забула ті варіанти. Можеш ще раз сказати, що знайти?"
+            print("DEBUG: Отримання лайкнутих пісень...")
+            # Потрібен browser.json
+            liked_data = await asyncio.to_thread(self.ytmusic.get_liked_songs, limit=50)
+            tracks = liked_data.get('tracks', [])
             
-            song = self.last_search_results[idx]
+            if not tracks:
+                return "Твій список лайкнутих пісень порожній або я не маю до нього доступу. Спробуй перевірити browser.json."
+            
+            song = random.choice(tracks)
             v_id = song['videoId']
-            self.current_song_info = {"title": song['title'], "artist": song['artists'][0]['name'], "id": v_id}
+            artist_name = song.get('artists', [{'name': 'Unknown'}])[0]['name']
+            self.current_song_info = {"title": song['title'], "artist": artist_name, "id": v_id}
             
             url = f"https://www.youtube.com/watch?v={v_id}"
             def get_stream_url():
@@ -248,9 +273,31 @@ class KaterynaServer:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl: return ydl.extract_info(url, download=False)['url']
             
             self.pending_url = await asyncio.to_thread(get_stream_url)
-            return f"Супер вибір! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
+            return f"Вмикаю твій улюблений трек: '{song['title']}' від {artist_name}."
         except Exception as e:
-            return "Помилка при спробі ввімкнути цей варіант."
+            print(f"DEBUG: Помилка лайкнутих: {e}")
+            return "Не вдалося отримати твої лайкнуті пісні."
+
+    async def play_option_task(self, index):
+        try:
+            idx = int(index) - 1
+            if not getattr(self, "last_search_results", None) or idx < 0 or idx >= len(self.last_search_results):
+                return "Я вже забула ті варіанти. Запитай ще раз."
+            
+            song = self.last_search_results[idx]
+            v_id = song['videoId']
+            artist_name = song.get('artists', [{'name': 'Unknown'}])[0]['name']
+            self.current_song_info = {"title": song['title'], "artist": artist_name, "id": v_id}
+            
+            url = f"https://www.youtube.com/watch?v={v_id}"
+            def get_stream_url():
+                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl: return ydl.extract_info(url, download=False)['url']
+            
+            self.pending_url = await asyncio.to_thread(get_stream_url)
+            return f"Окей, вмикаю варіант номер {index}: '{song['title']}'."
+        except Exception as e:
+            return "Не змогла ввімкнути цей варіант."
 
     async def get_weather_task(self, city):
         try:
@@ -264,8 +311,7 @@ class KaterynaServer:
                     w = await r.json()
                     return f"Зараз у місті {name} {w['current_weather']['temperature']}°C."
         except: return "Помилка отримання погоди."
-
-    async def get_forecast_task(self, city):
+            async def get_forecast_task(self, city):
         try:
             async with aiohttp.ClientSession() as s:
                 g_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=uk&format=json"
@@ -279,7 +325,7 @@ class KaterynaServer:
                     for i in range(3):
                         date = f["daily"]["time"][i]
                         mi, ma = f["daily"]["temperature_2m_min"][i], f["daily"]["temperature_2m_max"][i]
-                        res.append(f"{date}: від {mi} до {ma} градусів")
+                        res.append(f"{date}: від {mi} до {ma}°C")
                     return f"Прогноз для {name}: " + "; ".join(res)
         except: return "Помилка прогнозу."
 
@@ -315,19 +361,16 @@ class KaterynaServer:
         except: return "Помилка пошуку."
 
     async def process_user_audio(self, audio_bytes):
-        print("DEBUG: Отримано аудіо від клієнта. Починаю розпізнавання...")
-        
-        # Зберігаємо аудіо файл
+        print("DEBUG: Отримано аудіо. Починаю обробку...")
         ts = int(time.time())
         audio_filename = f"static/history/rec_{ts}.wav"
         try:
             with wave.open(audio_filename, "wb") as wf:
-                wf.setnchannels(1) # Mono
+                wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(audio_bytes)
             
-            # ШВИДКА ОБРОБКА: Тільки highpass (прибирає гул)
             processed_filename = audio_filename.replace(".wav", "_proc.wav")
             cmd = ["ffmpeg", "-y", "-i", audio_filename, "-af", "highpass=f=200", processed_filename]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -336,16 +379,14 @@ class KaterynaServer:
             if os.path.exists(processed_filename):
                 os.replace(processed_filename, audio_filename)
                 with open(audio_filename, "rb") as f:
-                    f.seek(44) # Пропускаємо WAV заголовок
+                    f.seek(44)
                     audio_bytes = f.read()
         except Exception as e:
-            print(f"DEBUG: Помилка обробки аудіо (шумодав/AGC): {e}")
+            print(f"DEBUG: Помилка обробки: {e}")
 
         audio_data = sr.AudioData(audio_bytes, 16000, 2)
         try:
             text = await asyncio.to_thread(self.recognizer.recognize_google, audio_data, language="uk-UA")
-            
-            # Створюємо запис в історії (поки без відповіді бота)
             entry = {
                 "id": ts,
                 "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -354,43 +395,34 @@ class KaterynaServer:
                 "audio_url": f"/static/history/rec_{ts}.wav"
             }
             self.history_data.insert(0, entry)
-            self.history_data = self.history_data[:100] # Обмежуємо останніми 100
+            self.history_data = self.history_data[:100]
             self.save_data(self.history_file, self.history_data)
             
             await self.handle_user_text(text, ts)
         except sr.UnknownValueError: 
-            print("DEBUG: Google не розпізнав слова (тиша або шум).")
+            print("DEBUG: Мова не розпізнана.")
             if self.send_to_client: await self.send_to_client({"command": "error", "message": "speech_not_recognized"})
         except Exception as e:
-            print(f"DEBUG: Помилка розпізнавання: {e}")
-            if self.send_to_client: await self.send_to_client({"command": "error", "message": str(e)})
+            print(f"DEBUG: Помилка: {e}")
 
     async def handle_user_text(self, text, history_id=None):
         text_lower = text.lower().strip()
-        print(f"DEBUG: Розпізнаний текст: '{text_lower}'")
-        
         if not self.is_active:
             if "катерина" in text_lower:
                 self.is_active = True
                 text = text_lower.replace("катерина", "").strip() or "Привіт"
-                print(f"DEBUG: Катерина прокинулась! Запит: {text}")
             else:
-                print(f"DEBUG: Ім'я 'Катерина' не знайдено, ігнорую.")
                 if self.send_to_client: await self.send_to_client({"command": "done", "status": "no_wake_word"})
                 return
 
         await self._play_effect("thinking")
-        print("DEBUG: Ефект 'thinking' відправлено клієнту.")
 
         if not self.conversation_history:
-            self.conversation_history = [{"role": "user", "parts": [{"text": "SYSTEM: " + self.get_system_instruction()}]}, {"role": "model", "parts": [{"text": "Привіт! Я готова допомагати."}]}]
+            self.conversation_history = [{"role": "user", "parts": [{"text": "SYSTEM: " + self.get_system_instruction()}]}, {"role": "model", "parts": [{"text": "Слухаю."}]}]
         self.conversation_history.append({"role": "user", "parts": [{"text": text}]})
 
         try:
-            print("DEBUG: Відправляю запит у Gemini...")
             response = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.0-flash", contents=self.conversation_history, config={"tools": self.tools})
-            print("DEBUG: Gemini повернула відповідь!")
-            
             model_parts = response.candidates[0].content.parts or []
             full_text = ""
             tool_results = []
@@ -399,51 +431,38 @@ class KaterynaServer:
                 if hasattr(part, "text") and part.text: 
                     full_text += part.text
                 if hasattr(part, "function_call") and part.function_call:
-                    func_name = part.function_call.name
-                    print(f"DEBUG: Gemini викликає функцію: {func_name}")
-                    res = await self.execute_tool(func_name, dict(part.function_call.args or {}))
-                    tool_results.append({"function_response": {"name": func_name, "response": {"result": res}}})
+                    res = await self.execute_tool(part.function_call.name, dict(part.function_call.args or {}))
+                    tool_results.append({"function_response": {"name": part.function_call.name, "response": {"result": res}}})
 
             if tool_results:
-                print("DEBUG: Функція виконана, відправляю результат назад у Gemini...")
                 self.conversation_history.append({"role": "model", "parts": model_parts})
                 self.conversation_history.append({"role": "user", "parts": tool_results})
                 final_resp = await asyncio.to_thread(self.client.models.generate_content, model="gemini-2.0-flash", contents=self.conversation_history, config={"tools": self.tools})
-                final_parts = final_resp.candidates[0].content.parts or []
-                for p in final_parts:
+                for p in final_resp.candidates[0].content.parts or []:
                     if hasattr(p, "text") and p.text: full_text += p.text
-                self.conversation_history.append({"role": "model", "parts": final_parts})
+                self.conversation_history.append({"role": "model", "parts": final_resp.candidates[0].content.parts})
             else:
                 self.conversation_history.append({"role": "model", "parts": model_parts})
 
             if full_text:
-                print(f"DEBUG: Фінальний текст для озвучки: {full_text}")
-                # Оновлюємо історію відповіддю бота
                 if history_id:
                     for entry in self.history_data:
                         if entry["id"] == history_id:
                             entry["bot_text"] = full_text
                             break
                     self.save_data(self.history_file, self.history_data)
-                
                 await self.speak_text(full_text)
-            else:
-                print("DEBUG: Тексту для озвучки немає.")
-                if self.send_to_client: await self.send_to_client({"command": "done", "status": "no_text"})
                 
             if getattr(self, "pending_url", None):
-                print(f"DEBUG: Знайдено pending_url, відправляю клієнту: {self.pending_url}")
                 if self.send_to_client: await self.send_to_client({"command": "play_url", "url": self.pending_url})
                 self.pending_url = None
                 
         except Exception as e: 
-            print(f"DEBUG: ПОМИЛКА GEMINI АБО ЗАГАЛЬНА ПОМИЛКА: {e}")
-            if self.send_to_client: await self.send_to_client({"command": "error", "message": "gemini_error"})
+            print(f"DEBUG: Помилка Gemini: {e}")
 
-    # ПОВНИЙ БЛОК EXECUTE_TOOL (усі 29 функцій)
     async def execute_tool(self, name, args):
-        print(f"DEBUG: Виконую інструмент {name} з аргументами {args}")
         if name == "play_music": return await self.play_music_task(args.get("query", ""))
+        if name == "play_my_liked_music": return await self.play_my_liked_music_task()
         if name == "play_option": return await self.play_option_task(args.get("index", 1))
         if name == "play_radio": 
             self.pending_url = RADIO_STATIONS.get(args.get("station", "").lower(), "https://online.hitfm.ua/HitFM")
@@ -459,132 +478,107 @@ class KaterynaServer:
             if self.send_to_client: await self.send_to_client({"command": "resume_audio"})
             return "Продовжую."
         if name == "set_volume":
-            lvl = args.get("level", 70)
-            if lvl <= 10: lvl *= 10
-            lvl = max(0, min(100, lvl))
+            lvl = max(0, min(100, args.get("level", 70)))
             if self.send_to_client: await self.send_to_client({"command": "set_volume", "level": lvl})
-            return f"Гучність встановлено на {lvl} відсотків."
-            
+            return f"Гучність {lvl}%."
         if name == "get_time": return f"Зараз {self._get_ukrainian_date_time()}."
         if name == "get_weather": return await self.get_weather_task(args.get("city", "Бориспіль"))
         if name == "get_forecast": return await self.get_forecast_task(args.get("city", "Бориспіль"))
         if name == "get_news": return await self.get_news_task()
         if name == "get_currency_rate": return await self.get_currency_task()
         if name == "search_internet": return await self.search_internet_task(args.get("query", ""))
-        
         if name == "tell_joke":
             await self._play_effect("joke")
             return "Чому програмісти не люблять природу? Бо там забагато багів!"
         if name == "flip_coin":
-            await self._play_effect("coin")
-            return "Випав Орел!" if time.time() % 2 > 1 else "Випала Решка!"
+            return "Орел!" if time.time() % 2 > 1 else "Решка!"
         if name == "roll_dice":
-            await self._play_effect("dice")
-            return f"Випало число {int(time.time() % 6) + 1}."
-            
+            return f"Випало {int(time.time() % 6) + 1}."
         if name == "save_note":
             note = args.get("note", "")
             with open("notes.txt", "a", encoding="utf-8") as f:
                 f.write(f"[{datetime.datetime.now().strftime('%d.%m %H:%M')}] {note}\n")
-            await self._play_effect("note")
-            return "Нотатку збережено."
+            return "Збережено."
         if name == "read_notes":
             if not os.path.exists("notes.txt"): return "Нотаток немає."
             with open("notes.txt", "r", encoding="utf-8") as f:
-                return "Ваші нотатки: " + ". ".join(f.readlines()[-5:])
-                
+                return "Останні нотатки: " + ". ".join(f.readlines()[-5:])
         if name == "manage_shopping_list":
             action, item = args.get("action", ""), args.get("item", "")
             if action == "add":
                 self.shopping_list.append(item)
                 self.save_data("shopping_list.txt", self.shopping_list)
-                return f"Додано {item} у список."
+                return f"Додано {item}."
             elif action == "read":
-                return "У списку покупок: " + ", ".join(self.shopping_list) if self.shopping_list else "Список порожній."
+                return "Список: " + ", ".join(self.shopping_list) if self.shopping_list else "Порожньо."
             elif action == "clear":
                 self.shopping_list = []
                 self.save_data("shopping_list.txt", [])
-                return "Список очищено."
-                
+                return "Очищено."
         if name == "send_telegram":
             msg = args.get("message", "")
-            if not self.tg_chat_id: return "Помилка: Напишіть боту в Telegram спочатку."
+            if not self.tg_chat_id: return "ID чату невідомий."
             async with aiohttp.ClientSession() as s:
                 await s.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": self.tg_chat_id, "text": msg})
             return "Відправлено."
-            
         if name == "translate":
             t, l = args.get("text", ""), args.get("target_lang", "en")
             async with aiohttp.ClientSession() as s:
                 async with s.get(f"https://api.mymemory.translated.net/get?q={t}&langpair=uk|{l}") as r:
                     d = await r.json()
                     return f"Переклад: {d['responseData']['translatedText']}"
-                    
         if name == "sleep_timer":
             m = args.get("minutes", 30)
             async def st():
                 await asyncio.sleep(m * 60)
                 if self.send_to_client: await self.send_to_client({"command": "stop_audio"})
             asyncio.create_task(st())
-            return f"Таймер сну на {m} хвилин встановлено."
-            
+            return f"Таймер на {m} хв встановлено."
         if name == "start_pomodoro":
             w = args.get("work_min", 25)
             async def pom():
                 await asyncio.sleep(w * 60)
-                await self._play_effect("joke")
-                await self.speak_text("Час роботи вийшов! Пора відпочити.")
+                await self.speak_text("Час відпочити!")
             asyncio.create_task(pom())
-            return f"Помодоро на {w} хвилин запущено."
-            
+            return f"Помодоро на {w} хв."
         if name == "daily_briefing":
             w = await self.get_weather_task("Бориспіль")
             n = await self.get_news_task()
             c = await self.get_currency_task()
-            return f"Ваш звіт: {w}. {n}. {c}."
-            
+            return f"Звіт: {w}. {n}. {c}."
         if name == "get_system_info":
-            return f"Завантаження процесора {psutil.cpu_percent()}%, пам'ять {psutil.virtual_memory().percent}%."
-            
+            return f"ЦП: {psutil.cpu_percent()}%, RAM: {psutil.virtual_memory().percent}%."
         if name == "add_to_favorites":
-            if not getattr(self, "current_song_info", None): return "Зараз нічого не грає."
-            if any(f.get('id') == self.current_song_info['id'] for f in self.favorites): return "Вже в обраному."
+            if not getattr(self, "current_song_info", None): return "Нічого не грає."
             self.favorites.append(self.current_song_info)
             self.save_data("favorites.json", self.favorites)
-            return f"Додала {self.current_song_info['title']} в обране."
-            
+            return f"Додано {self.current_song_info['title']}."
         if name == "play_favorites":
             if not self.favorites: return "Список порожній."
             song = random.choice(self.favorites)
             return await self.play_music_task(f"{song['title']} {song['artist']}")
-            
         if name == "remember_name":
             n = args.get("name", "")
             self.user_name = n
             self.save_data("user_name.txt", n)
-            return f"Приємно познайомитись, {n}!"
-            
+            return f"Привіт, {n}!"
         if name == "set_reminder":
             self.schedule.append({"time": args.get("time_str"), "message": args.get("message")})
             self.save_data("schedule.json", self.schedule)
             return "Нагадування збережено."
-            
         if name == "set_timer":
             sec = args.get("seconds", 60)
             async def timer_task():
                 await asyncio.sleep(sec)
-                await self._play_effect("notify")
                 await self.speak_text("Час таймера вийшов!")
             asyncio.create_task(timer_task())
-            return f"Таймер на {sec} секунд запущено."
-            
+            return f"Таймер на {sec} сек."
         return "Виконано."
 
 assistant = KaterynaServer()
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Запускаємо фонові задачі
+    # Запускаємо фонові задачі при старті сервера
     asyncio.create_task(assistant.background_scheduler())
     asyncio.create_task(assistant.poll_telegram())
     yield
@@ -750,13 +744,33 @@ HTML_TEMPLATE = """
             font-size: 0.8rem;
             color: var(--dim-text);
         }
+
+        input[type="text"] {
+            background: #0b0e14;
+            border: 1px solid #30363d;
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        button.primary {
+            background: var(--accent-color);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
     <header>
         <h1><div class="status-dot"></div> Kateryna AI Chat</h1>
         <div style="display: flex; align-items: center; gap: 15px;">
-            <div id="web-speaker-btn" onclick="toggleWebSpeaker()" title="Режим колонки (озвучка на сайті)" style="cursor:pointer; color:var(--dim-text); display:flex; align-items:center; gap:5px; font-size:14px; background:rgba(255,255,255,0.05); padding:5px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.1);">
+            <div id="web-speaker-btn" onclick="toggleWebSpeaker()" title="Режим колонки" style="cursor:pointer; color:var(--dim-text); display:flex; align-items:center; gap:5px; font-size:14px; background:rgba(255,255,255,0.05); padding:5px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.1);">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                 <span>Озвучка: OFF</span>
             </div>
@@ -771,19 +785,17 @@ HTML_TEMPLATE = """
         <div style="background:var(--chat-bg); padding:30px; border-radius:20px; width:90%; max-width:400px; border:1px solid #30363d;">
             <h2 style="margin-top:0;">Налаштування</h2>
             <div style="margin-bottom:20px;">
-                <label style="display:block; margin-bottom:8px; color:var(--dim-text);">Назва Bluetooth колонки:</label>
-                <input type="text" id="bt-name" value="JBL_Flip_5" style="width:100%; padding:10px; background:#0b0e14; border:1px solid #30363d; color:white; border-radius:8px; box-sizing:border-box;">
+                <label style="display:block; margin-bottom:8px; color:var(--dim-text);">Bluetooth колонка:</label>
+                <input type="text" id="bt-name" value="JBL_Flip_5">
             </div>
             <div style="display:flex; gap:10px;">
-                <button onclick="saveSettings()" style="flex:1; padding:10px; background:var(--accent-color); border:none; color:white; border-radius:8px; cursor:pointer; font-weight:600;">Зберегти</button>
-                <button onclick="toggleSettings()" style="flex:1; padding:10px; background:#30363d; border:none; color:white; border-radius:8px; cursor:pointer;">Закрити</button>
+                <button class="primary" onclick="saveSettings()" style="flex:1;">Зберегти</button>
+                <button onclick="toggleSettings()" style="flex:1; background:#30363d; border:none; color:white; border-radius:8px; cursor:pointer;">Закрити</button>
             </div>
         </div>
     </div>
 
-    <div id="chat-container">
-        <!-- Messages will be injected here -->
-    </div>
+    <div id="chat-container"></div>
 
     <script>
         let lastId = null;
@@ -793,21 +805,14 @@ HTML_TEMPLATE = """
                 const response = await fetch('/api/history');
                 const data = await response.json();
                 const container = document.getElementById('chat-container');
-                
-                // Check if we need to re-render
                 if (data.length > 0 && data[0].id === lastId) return;
                 lastId = data.length > 0 ? data[0].id : null;
-
                 container.innerHTML = '';
-                
                 if (data.length === 0) {
-                    container.innerHTML = '<div style="text-align:center; color:var(--dim-text); margin-top:50px;">Почніть розмову з Катериною...</div>';
+                    container.innerHTML = '<div style="text-align:center; color:var(--dim-text); margin-top:50px;">Історія порожня...</div>';
                     return;
                 }
-
-                // Reverse data for chronological chat flow (oldest at top)
                 [...data].reverse().forEach(item => {
-                    // User Group
                     const userGroup = document.createElement('div');
                     userGroup.className = 'message-group user-group';
                     userGroup.innerHTML = `
@@ -825,8 +830,6 @@ HTML_TEMPLATE = """
                         <div class="meta">${item.time}</div>
                     `;
                     container.appendChild(userGroup);
-
-                    // Bot Group (if response exists)
                     if (item.bot_text && item.bot_text !== "...") {
                         const botGroup = document.createElement('div');
                         botGroup.className = 'message-group';
@@ -837,149 +840,5 @@ HTML_TEMPLATE = """
                         container.appendChild(botGroup);
                     }
                 });
-
                 container.scrollTop = container.scrollHeight;
-                document.getElementById('last-update').innerText = 'Останнє оновлення: ' + new Date().toLocaleTimeString();
-            } catch (error) {
-                console.error('Error loading history:', error);
-            }
-        }
-
-        function playAudio(url, btn) {
-            const audio = new Audio(url);
-            const originalIcon = btn.innerHTML;
-            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
-            audio.play();
-            audio.onended = () => btn.innerHTML = originalIcon;
-        }
-
-        async function saveSettings() {
-            const name = document.getElementById('bt-name').value;
-            await fetch('/api/settings', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({bt_speaker: name})
-            });
-            toggleSettings();
-            alert('Налаштування надіслано на ESP32!');
-        }
-
-        function toggleSettings() {
-            const modal = document.getElementById('settings-modal');
-            modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
-        }
-
-        let webSpeakerEnabled = false;
-        let ws;
-
-        function toggleWebSpeaker() {
-            webSpeakerEnabled = !webSpeakerEnabled;
-            const btn = document.getElementById('web-speaker-btn');
-            if (webSpeakerEnabled) {
-                btn.style.color = 'var(--accent-color)';
-                btn.style.borderColor = 'var(--accent-color)';
-                btn.querySelector('span').innerText = 'Озвучка: ON';
-                initWebSocket();
-                // Потрібно клікнути по сторінці, щоб браузер дозволив звук
-                const audio = new Audio(); 
-                audio.play().catch(() => {});
-            } else {
-                btn.style.color = 'var(--dim-text)';
-                btn.style.borderColor = 'rgba(255,255,255,0.1)';
-                btn.querySelector('span').innerText = 'Озвучка: OFF';
-                if (ws) ws.close();
-            }
-        }
-
-        function initWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            ws.onmessage = (event) => {
-                if (!webSpeakerEnabled) return;
-                const data = JSON.parse(event.data);
-                if (data.command === 'play_tts_url' || data.command === 'play_url' || data.command === 'play_effect_url') {
-                    console.log("Playing from WebSocket:", data.url);
-                    const audio = new Audio(data.url);
-                    audio.play();
-                }
-            };
-            ws.onclose = () => {
-                if (webSpeakerEnabled) setTimeout(initWebSocket, 2000);
-            };
-        }
-
-        loadHistory();
-        setInterval(loadHistory, 3000);
-    </script>
-</body>
-</html>
-"""
-
-@app.get("/", response_class=HTMLResponse)
-async def get_index():
-    return HTML_TEMPLATE
-
-@app.get("/chat", response_class=HTMLResponse)
-async def get_chat():
-    return HTML_TEMPLATE
-
-@app.get("/api/history")
-async def get_history():
-    return assistant.history_data
-
-@app.post("/api/settings")
-async def save_settings(data: dict):
-    if "bt_speaker" in data:
-        assistant.bt_speaker = data["bt_speaker"]
-        assistant.save_data("bt_speaker.txt", assistant.bt_speaker)
-        if assistant.send_to_client:
-            await assistant.send_to_client({"command": "set_bt_speaker", "name": assistant.bt_speaker})
-    return {"status": "ok"}
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("DEBUG: Клієнт успішно підключився по WebSocket!")
-    
-    host = websocket.headers.get("host", "localhost:8000")
-    scheme = "https" if "onrender" in host else "http"
-    assistant.server_url = f"{scheme}://{host}"
-    print(f"DEBUG: URL сервера встановлено як {assistant.server_url}")
-    
-    async def send_json(data):
-        try:
-            await websocket.send_json(data)
-        except Exception as e: 
-            print(f"DEBUG: Помилка відправки JSON: {e}")
-            
-    # Використовуємо broadcast замість send_to_client
-    assistant.send_to_client = assistant.broadcast
-    assistant.clients.append(websocket)
-    
-    await assistant._play_effect("startup")
-    
-    # Відправляємо назву колонки при підключенні
-    await send_json({"command": "set_bt_speaker", "name": assistant.bt_speaker})
-    
-    audio_buffer = bytearray()
-    try:
-        while True:
-            message = await websocket.receive()
-            if "bytes" in message:
-                audio_buffer.extend(message["bytes"])
-            elif "text" in message:
-                try:
-                    data = json.loads(message["text"])
-                    if data.get("action") == "process_audio":
-                        if len(audio_buffer) > 0:
-                            await assistant.process_user_audio(bytes(audio_buffer))
-                            audio_buffer.clear()
-                except Exception as e:
-                    print(f"DEBUG: Отримано текст, але це не JSON. Текст: {message['text']}")
-    except (WebSocketDisconnect, RuntimeError) as e:
-        print(f"DEBUG: Клієнт відключився. Причина: {e}")
-        if websocket in assistant.clients: assistant.clients.remove(websocket)
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+                document.getElementById('last-update').innerText = 'Оновлено: ' + new Date().toLocaleTi
