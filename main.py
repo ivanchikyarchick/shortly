@@ -41,9 +41,9 @@ class KaterynaServer:
 
         self.client = genai.Client(api_key=api_key)
 
-        # 1. Ініціалізація YTMusic з browser.json
+        # 1. Ініціалізація YTMusic з browser.json (з авто-генерацією Authorization)
         try:
-            self.ytmusic = YTMusic("browser.json")
+            self.ytmusic = YTMusic(self._build_browser_auth("browser.json"))
             print("✅ YTMusic ініціалізовано з browser.json (авторизований акаунт)")
         except Exception as e:
             print(f"⚠️ Не вдалося завантажити browser.json, використовую анонімний режим: {e}")
@@ -103,6 +103,45 @@ class KaterynaServer:
             {"name": "get_system_info", "description": "Стан процесора та пам'яті сервера."},
             {"name": "play_my_liked_music", "description": "Вмикає випадкову пісню з улюблених (лайкнутих) пісень користувача в YouTube Music."},
         ]}]
+
+    @staticmethod
+    def _build_browser_auth(browser_json_path: str) -> str:
+        """
+        Генерує тимчасовий browser.json з Authorization (SAPISIDHASH),
+        обчисленим з SAPISID у cookie. Повертає шлях до тимчасового файлу.
+        """
+        import hashlib
+        import re
+        import time as _time
+
+        with open(browser_json_path, "r", encoding="utf-8") as f:
+            headers = json.load(f)
+
+        # Нормалізуємо ключі
+        normalized = {k.title(): v for k, v in headers.items()}
+
+        # Якщо Authorization вже є — просто зберігаємо нормалізований файл
+        if "Authorization" not in normalized:
+            cookie_str = normalized.get("Cookie", "")
+            # Витягуємо SAPISID з cookie
+            match = re.search(r'(?:^|;\s*)SAPISID=([^;]+)', cookie_str)
+            if not match:
+                # Спробуємо __Secure-3PAPISID як fallback
+                match = re.search(r'(?:^|;\s*)__Secure-3PAPISID=([^;]+)', cookie_str)
+            if not match:
+                raise ValueError("Не знайдено SAPISID у cookie. Перевір browser.json.")
+
+            sapisid = match.group(1).strip()
+            origin = "https://music.youtube.com"
+            ts = int(_time.time())
+            digest = hashlib.sha1(f"{ts} {sapisid} {origin}".encode()).hexdigest()
+            normalized["Authorization"] = f"SAPISIDHASH {ts}_{digest}"
+            print(f"DEBUG: Authorization згенеровано автоматично з SAPISID")
+
+        out_path = "browser_auth.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
+        return out_path
 
     async def broadcast(self, data):
         disconnected = []
