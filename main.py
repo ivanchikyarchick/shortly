@@ -162,18 +162,55 @@ class KaterynaServer:
         raise RuntimeError("Всі Piped інстанси недоступні")
 
     async def _resolve_stream_url(self, video_id: str) -> str:
-        """Спробує yt_dlp, при помилці — Piped API."""
+        """
+        Завантажує аудіо як mp3 файл у static/ і повертає його URL.
+        Надійніше ніж stream URL — не залежить від bot-detection.
+        """
         yt_url = f"https://www.youtube.com/watch?v={video_id}"
+        out_path = f"static/music_{video_id}"
+        final_file = out_path + ".mp3"
+
+        # Якщо вже є закешований файл — одразу повертаємо
+        if os.path.exists(final_file):
+            print(f"DEBUG: Використовую кешований файл {final_file}")
+            return f"{self.server_url}/static/music_{video_id}.mp3"
+
+        def _download():
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': out_path + '.%(ext)s',
+                'quiet': True,
+                'noplaylist': True,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+            }
+            # Додаємо cookies якщо є
+            try:
+                cookies_file = KaterynaServer._ensure_cookies_txt()
+                if cookies_file:
+                    ydl_opts['cookiefile'] = cookies_file
+            except Exception:
+                pass
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([yt_url])
+
+        await asyncio.to_thread(_download)
+
+        if not os.path.exists(final_file):
+            raise RuntimeError(f"Файл не створено після завантаження: {final_file}")
+
+        # Чистимо старі файли (залишаємо тільки 5 останніх)
         try:
-            def _ydl():
-                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
-                    return ydl.extract_info(yt_url, download=False)['url']
-            result = await asyncio.to_thread(_ydl)
-            print(f"DEBUG: yt_dlp успішно отримав URL для {video_id}")
-            return result
-        except Exception as e:
-            print(f"DEBUG: yt_dlp не вдалося ({e}), пробую Piped...")
-            return await self._get_stream_url_piped(video_id)
+            music_files = sorted(
+                [f for f in os.listdir("static") if f.startswith("music_") and f.endswith(".mp3")],
+                key=lambda f: os.path.getmtime(f"static/{f}")
+            )
+            for old in music_files[:-5]:
+                os.remove(f"static/{old}")
+        except Exception:
+            pass
+
+        print(f"DEBUG: Музику завантажено: {final_file}")
+        return f"{self.server_url}/static/music_{video_id}.mp3"
 
     @staticmethod
     def _ensure_cookies_txt() -> str:
