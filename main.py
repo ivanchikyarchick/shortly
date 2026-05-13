@@ -113,12 +113,17 @@ class KaterynaServer:
 
     @staticmethod
     def _get_ydl_opts() -> dict:
-        """Повертає налаштування yt_dlp з cookie та iOS client для обходу bot-detection."""
+        """Повертає налаштування yt_dlp з iOS + tv_embedded client для обходу bot-detection."""
         opts = {
             'format': 'bestaudio/best',
             'quiet': True,
             'noplaylist': True,
-            'extractor_args': {'youtube': {'player_client': ['ios']}},
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'tv_embedded'],
+                    'skip': ['hls', 'dash'],
+                }
+            },
         }
         try:
             cookies_file = KaterynaServer._ensure_cookies_txt()
@@ -127,6 +132,48 @@ class KaterynaServer:
         except Exception as e:
             print(f"DEBUG: Не вдалося підготувати cookies для yt_dlp: {e}")
         return opts
+
+    @staticmethod
+    async def _get_stream_url_piped(video_id: str) -> str:
+        """Отримує аудіо URL через Piped API як fallback якщо yt_dlp заблоковано."""
+        piped_instances = [
+            "https://pipedapi.kavin.rocks",
+            "https://piped-api.garudalinux.org",
+            "https://api.piped.projectsegfau.lt",
+        ]
+        async with aiohttp.ClientSession() as session:
+            for instance in piped_instances:
+                try:
+                    async with session.get(
+                        f"{instance}/streams/{video_id}",
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        audio_streams = data.get("audioStreams", [])
+                        if audio_streams:
+                            best = sorted(audio_streams, key=lambda x: x.get("bitrate", 0), reverse=True)[0]
+                            print(f"DEBUG: Piped URL отримано з {instance}")
+                            return best["url"]
+                except Exception as e:
+                    print(f"DEBUG: Piped instance {instance} недоступний: {e}")
+                    continue
+        raise RuntimeError("Всі Piped інстанси недоступні")
+
+    async def _resolve_stream_url(self, video_id: str) -> str:
+        """Спробує yt_dlp, при помилці — Piped API."""
+        yt_url = f"https://www.youtube.com/watch?v={video_id}"
+        try:
+            def _ydl():
+                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
+                    return ydl.extract_info(yt_url, download=False)['url']
+            result = await asyncio.to_thread(_ydl)
+            print(f"DEBUG: yt_dlp успішно отримав URL для {video_id}")
+            return result
+        except Exception as e:
+            print(f"DEBUG: yt_dlp не вдалося ({e}), пробую Piped...")
+            return await self._get_stream_url_piped(video_id)
 
     @staticmethod
     def _ensure_cookies_txt() -> str:
@@ -315,12 +362,7 @@ class KaterynaServer:
             artist = artists[0]["name"] if artists else "Невідомий виконавець"
             self.current_song_info = {"title": title, "artist": artist, "id": v_id}
 
-            url = f"https://www.youtube.com/watch?v={v_id}"
-            def get_stream_url():
-                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
-                    return ydl.extract_info(url, download=False)['url']
-
-            self.pending_url = await asyncio.to_thread(get_stream_url)
+            self.pending_url = await self._resolve_stream_url(v_id)
             return {"status": "playing", "title": title, "artist": artist}
         except Exception as e:
             print(f"DEBUG: Помилка play_my_liked_music: {e}")
@@ -351,11 +393,7 @@ class KaterynaServer:
                             artists = song.get("artists", [])
                             artist = artists[0]["name"] if artists else "Невідомий виконавець"
                             self.current_song_info = {"title": title, "artist": artist, "id": v_id}
-                            url = f"https://www.youtube.com/watch?v={v_id}"
-                            def get_stream_url_charts():
-                                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
-                                    return ydl.extract_info(url, download=False)['url']
-                            self.pending_url = await asyncio.to_thread(get_stream_url_charts)
+                            self.pending_url = await self._resolve_stream_url(v_id)
                             return {"status": "playing", "title": title, "artist": artist, "note": "Пісня з українських чартів."}
                 except Exception as chart_err:
                     print(f"DEBUG: Помилка чартів, fallback на пошук: {chart_err}")
@@ -372,12 +410,7 @@ class KaterynaServer:
             v_id = best['videoId']
             self.current_song_info = {"title": best['title'], "artist": best['artists'][0]['name'], "id": v_id}
 
-            url = f"https://www.youtube.com/watch?v={v_id}"
-            def get_stream_url():
-                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
-                    return ydl.extract_info(url, download=False)['url']
-
-            self.pending_url = await asyncio.to_thread(get_stream_url)
+            self.pending_url = await self._resolve_stream_url(v_id)
             options_str = ", ".join([f"{i+1}. {r['title']}" for i, r in enumerate(results[:3])])
             return {
                 "status": "playing",
@@ -400,12 +433,7 @@ class KaterynaServer:
             v_id = song['videoId']
             self.current_song_info = {"title": song['title'], "artist": song['artists'][0]['name'], "id": v_id}
 
-            url = f"https://www.youtube.com/watch?v={v_id}"
-            def get_stream_url():
-                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
-                    return ydl.extract_info(url, download=False)['url']
-
-            self.pending_url = await asyncio.to_thread(get_stream_url)
+            self.pending_url = await self._resolve_stream_url(v_id)
             return f"Супер вибір! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
         except Exception as e:
             print(f"DEBUG: Помилка play_option: {e}")
