@@ -113,11 +113,12 @@ class KaterynaServer:
 
     @staticmethod
     def _get_ydl_opts() -> dict:
-        """Повертає налаштування yt_dlp з cookie з browser.json для обходу bot-detection."""
+        """Повертає налаштування yt_dlp з cookie та iOS client для обходу bot-detection."""
         opts = {
             'format': 'bestaudio/best',
             'quiet': True,
             'noplaylist': True,
+            'extractor_args': {'youtube': {'player_client': ['ios']}},
         }
         try:
             cookies_file = KaterynaServer._ensure_cookies_txt()
