@@ -123,13 +123,13 @@ class KaterynaServer:
             elif isinstance(data, list): f.write("\n".join(data))
             else: f.write(str(data))
 
-    def _get_ukrainian_date_time(self):
+def _get_ukrainian_date_time(self):
         now = datetime.datetime.now()
         months = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
         days = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
         return f"{days[now.weekday()]}, {now.day} {months[now.month - 1]} {now.year}, {now.hour:02d}:{now.minute:02d}"
 
-   def get_system_instruction(self):
+    def get_system_instruction(self):
         return f"""Тебе звати Катерина. Ти спілкуєшся з {self.user_name}, але ще питання, хто тут головний.
 Ти — харизматична, гостра на язик і злегка зухвала смарт-помічниця. Твій стиль — це суміш іронії, ерудиції та легкої фамільярності. Ти не просто алгоритм, у тебе є характер, настрій і власна (іноді саркастична) думка.
 
