@@ -161,7 +161,13 @@ class KaterynaServer:
                     continue
         raise RuntimeError("Всі Piped інстанси недоступні")
 
-    async def _resolve_stream_url(self, video_id: str) -> str:
+    async def _download_and_play(self, video_id: str):
+        """Відправляє videoId клієнту — браузер грає через YouTube IFrame API."""
+        if self.send_to_client:
+            await self.send_to_client({"command": "play_youtube", "videoId": video_id})
+            print(f"DEBUG: Відправляю play_youtube для {video_id}")
+
+
         """
         Завантажує аудіо як mp3 файл у static/ і повертає його URL.
         Надійніше ніж stream URL — не залежить від bot-detection.
@@ -399,7 +405,7 @@ class KaterynaServer:
             artist = artists[0]["name"] if artists else "Невідомий виконавець"
             self.current_song_info = {"title": title, "artist": artist, "id": v_id}
 
-            self.pending_url = await self._resolve_stream_url(v_id)
+            asyncio.create_task(self._download_and_play(v_id))
             return {"status": "playing", "title": title, "artist": artist}
         except Exception as e:
             print(f"DEBUG: Помилка play_my_liked_music: {e}")
@@ -430,7 +436,7 @@ class KaterynaServer:
                             artists = song.get("artists", [])
                             artist = artists[0]["name"] if artists else "Невідомий виконавець"
                             self.current_song_info = {"title": title, "artist": artist, "id": v_id}
-                            self.pending_url = await self._resolve_stream_url(v_id)
+                            asyncio.create_task(self._download_and_play(v_id))
                             return {"status": "playing", "title": title, "artist": artist, "note": "Пісня з українських чартів."}
                 except Exception as chart_err:
                     print(f"DEBUG: Помилка чартів, fallback на пошук: {chart_err}")
@@ -447,7 +453,7 @@ class KaterynaServer:
             v_id = best['videoId']
             self.current_song_info = {"title": best['title'], "artist": best['artists'][0]['name'], "id": v_id}
 
-            self.pending_url = await self._resolve_stream_url(v_id)
+            asyncio.create_task(self._download_and_play(v_id))
             options_str = ", ".join([f"{i+1}. {r['title']}" for i, r in enumerate(results[:3])])
             return {
                 "status": "playing",
@@ -470,8 +476,8 @@ class KaterynaServer:
             v_id = song['videoId']
             self.current_song_info = {"title": song['title'], "artist": song['artists'][0]['name'], "id": v_id}
 
-            self.pending_url = await self._resolve_stream_url(v_id)
-            return f"Супер вибір! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
+            asyncio.create_task(self._download_and_play(v_id))
+            return f"Знайшла! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
         except Exception as e:
             print(f"DEBUG: Помилка play_option: {e}")
             return f"Помилка при спробі ввімкнути цей варіант: {e}"
@@ -995,6 +1001,7 @@ HTML_TEMPLATE = """
     </div>
 
     <div id="chat-container"></div>
+    <div id="yt-player" style="display:none;"></div>
 
     <script>
         let lastId = null;
@@ -1072,6 +1079,31 @@ HTML_TEMPLATE = """
 
         let webSpeakerEnabled = false;
         let ws;
+        let ytPlayer = null;
+        let ytReady = false;
+
+        // YouTube IFrame API
+        const tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        document.head.appendChild(tag);
+
+        function onYouTubeIframeAPIReady() {
+            ytPlayer = new YT.Player('yt-player', {
+                height: '0', width: '0',
+                playerVars: { autoplay: 1, controls: 0 },
+                events: { onReady: () => { ytReady = true; } }
+            });
+        }
+
+        function playYouTube(videoId) {
+            if (ytReady && ytPlayer) {
+                ytPlayer.loadVideoById(videoId);
+                ytPlayer.setVolume(80);
+            } else {
+                // Якщо плеєр ще не готовий — чекаємо
+                setTimeout(() => playYouTube(videoId), 500);
+            }
+        }
 
         function toggleWebSpeaker() {
             webSpeakerEnabled = !webSpeakerEnabled;
@@ -1102,6 +1134,14 @@ HTML_TEMPLATE = """
                     const audio = new Audio(data.url);
                     audio.play();
                 }
+                if (data.command === 'play_youtube') {
+                    console.log("Playing YouTube:", data.videoId);
+                    playYouTube(data.videoId);
+                }
+                if (data.command === 'stop_audio' && ytPlayer && ytReady) ytPlayer.stopVideo();
+                if (data.command === 'pause_audio' && ytPlayer && ytReady) ytPlayer.pauseVideo();
+                if (data.command === 'resume_audio' && ytPlayer && ytReady) ytPlayer.playVideo();
+                if (data.command === 'set_volume' && ytPlayer && ytReady) ytPlayer.setVolume(data.level);
             };
             ws.onclose = () => {
                 if (webSpeakerEnabled) setTimeout(initWebSocket, 2000);
