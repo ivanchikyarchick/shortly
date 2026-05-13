@@ -41,6 +41,13 @@ class KaterynaServer:
 
         self.client = genai.Client(api_key=api_key)
 
+        # Генеруємо cookies.txt для yt_dlp одразу при старті
+        try:
+            self._ensure_cookies_txt()
+            print("✅ cookies.txt згенеровано для yt_dlp")
+        except Exception as e:
+            print(f"⚠️ Не вдалося згенерувати cookies.txt: {e}")
+
         # 1. Ініціалізація YTMusic з browser.json (з авто-генерацією Authorization)
         try:
             self.ytmusic = YTMusic(self._build_browser_auth("browser.json"))
@@ -113,18 +120,44 @@ class KaterynaServer:
             'noplaylist': True,
         }
         try:
-            with open("browser.json", "r", encoding="utf-8") as f:
-                headers = json.load(f)
-            cookie = headers.get("cookie", headers.get("Cookie", ""))
-            user_agent = headers.get("user-agent", headers.get("User-Agent", ""))
-            if cookie:
-                opts['http_headers'] = {
-                    'Cookie': cookie,
-                    'User-Agent': user_agent,
-                }
+            cookies_file = KaterynaServer._ensure_cookies_txt()
+            if cookies_file:
+                opts['cookiefile'] = cookies_file
         except Exception as e:
-            print(f"DEBUG: Не вдалося завантажити cookie для yt_dlp: {e}")
+            print(f"DEBUG: Не вдалося підготувати cookies для yt_dlp: {e}")
         return opts
+
+    @staticmethod
+    def _ensure_cookies_txt() -> str:
+        """
+        Конвертує cookie з browser.json у Netscape-формат cookies.txt
+        який yt_dlp розуміє нативно. Повертає шлях до файлу.
+        """
+        import re
+        out_path = "cookies.txt"
+
+        with open("browser.json", "r", encoding="utf-8") as f:
+            headers = json.load(f)
+
+        cookie_str = headers.get("cookie", headers.get("Cookie", ""))
+        if not cookie_str:
+            return None
+
+        lines = ["# Netscape HTTP Cookie File", "# Generated from browser.json", ""]
+        for part in cookie_str.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            name, _, value = part.partition("=")
+            name = name.strip()
+            value = value.strip()
+            # domain, flag, path, secure, expiry, name, value
+            lines.append(f".youtube.com\tTRUE\t/\tTRUE\t2147483647\t{name}\t{value}")
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        return out_path
 
     @staticmethod
     def _build_browser_auth(browser_json_path: str) -> str:
