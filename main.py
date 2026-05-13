@@ -105,6 +105,28 @@ class KaterynaServer:
         ]}]
 
     @staticmethod
+    def _get_ydl_opts() -> dict:
+        """Повертає налаштування yt_dlp з cookie з browser.json для обходу bot-detection."""
+        opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'noplaylist': True,
+        }
+        try:
+            with open("browser.json", "r", encoding="utf-8") as f:
+                headers = json.load(f)
+            cookie = headers.get("cookie", headers.get("Cookie", ""))
+            user_agent = headers.get("user-agent", headers.get("User-Agent", ""))
+            if cookie:
+                opts['http_headers'] = {
+                    'Cookie': cookie,
+                    'User-Agent': user_agent,
+                }
+        except Exception as e:
+            print(f"DEBUG: Не вдалося завантажити cookie для yt_dlp: {e}")
+        return opts
+
+    @staticmethod
     def _build_browser_auth(browser_json_path: str) -> str:
         """
         Генерує тимчасовий browser.json з Authorization (SAPISIDHASH),
@@ -261,15 +283,14 @@ class KaterynaServer:
 
             url = f"https://www.youtube.com/watch?v={v_id}"
             def get_stream_url():
-                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
                     return ydl.extract_info(url, download=False)['url']
 
             self.pending_url = await asyncio.to_thread(get_stream_url)
             return {"status": "playing", "title": title, "artist": artist}
         except Exception as e:
             print(f"DEBUG: Помилка play_my_liked_music: {e}")
-            return "Не вдалося отримати лайкнуті пісні. Перевір авторизацію browser.json."
+            return f"Технічна помилка при отриманні лайкнутих пісень: {e}"
 
     # 4. Оновлена функція пошуку музики з підтримкою чартів
     async def play_music_task(self, query):
@@ -298,8 +319,7 @@ class KaterynaServer:
                             self.current_song_info = {"title": title, "artist": artist, "id": v_id}
                             url = f"https://www.youtube.com/watch?v={v_id}"
                             def get_stream_url_charts():
-                                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
-                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
                                     return ydl.extract_info(url, download=False)['url']
                             self.pending_url = await asyncio.to_thread(get_stream_url_charts)
                             return {"status": "playing", "title": title, "artist": artist, "note": "Пісня з українських чартів."}
@@ -320,8 +340,7 @@ class KaterynaServer:
 
             url = f"https://www.youtube.com/watch?v={v_id}"
             def get_stream_url():
-                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
                     return ydl.extract_info(url, download=False)['url']
 
             self.pending_url = await asyncio.to_thread(get_stream_url)
@@ -335,7 +354,7 @@ class KaterynaServer:
             }
         except Exception as e:
             print(f"DEBUG: Помилка музики: {e}")
-            return "Ой, технічна заминка з музикою. Спробуй ще раз!"
+            return f"Технічна помилка при пошуку музики: {e}"
 
     async def play_option_task(self, index):
         try:
@@ -349,14 +368,14 @@ class KaterynaServer:
 
             url = f"https://www.youtube.com/watch?v={v_id}"
             def get_stream_url():
-                ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(KaterynaServer._get_ydl_opts()) as ydl:
                     return ydl.extract_info(url, download=False)['url']
 
             self.pending_url = await asyncio.to_thread(get_stream_url)
             return f"Супер вибір! Вмикаю '{song['title']}' від '{song['artists'][0]['name']}'."
         except Exception as e:
-            return "Помилка при спробі ввімкнути цей варіант."
+            print(f"DEBUG: Помилка play_option: {e}")
+            return f"Помилка при спробі ввімкнути цей варіант: {e}"
 
     async def get_weather_task(self, city):
         try:
