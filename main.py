@@ -123,7 +123,7 @@ class KaterynaServer:
             elif isinstance(data, list): f.write("\n".join(data))
             else: f.write(str(data))
 
-def _get_ukrainian_date_time(self):
+    def _get_ukrainian_date_time(self):
         now = datetime.datetime.now()
         months = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"]
         days = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
