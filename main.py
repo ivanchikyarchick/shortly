@@ -332,11 +332,12 @@ class KaterynaServer:
 Поточний час: {self._get_ukrainian_date_time()}"""
 
     async def _play_effect(self, effect_name):
+        # Замінюємо https на http для CDN посилань, щоб ESP32 не витрачав пам'ять на SSL для ефектів!
         urls = {
-            "startup": "https://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/glass.mp3",
-            "thinking": "https://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/water_droplet.mp3",
-            "joke": "https://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/bell_ring.mp3",
-            "notify": "https://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/snap.mp3"
+            "startup": "http://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/glass.mp3",
+            "thinking": "http://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/water_droplet.mp3",
+            "joke": "http://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/bell_ring.mp3",
+            "notify": "http://cdnjs.cloudflare.com/ajax/libs/ion-sound/3.0.7/sounds/snap.mp3"
         }
         if effect_name in urls and self.send_to_client:
             await self.send_to_client({"command": "play_effect_url", "url": urls[effect_name]})
@@ -378,7 +379,9 @@ class KaterynaServer:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             await proc.wait()
             if os.path.exists(temp_speech):
-                url = f"{self.server_url}/static/k_speech.mp3?t={int(time.time())}"
+                # Форсуємо HTTP замість HTTPS для клієнта (ESP32), щоб оминути важкі SSL-handshake і зберегти RAM!
+                client_url = self.server_url.replace("https://", "http://")
+                url = f"{client_url}/static/k_speech.mp3?t={int(time.time())}"
                 print(f"DEBUG: Голос згенеровано успішно. Відправляю URL: {url}")
                 await self.broadcast({"command": "play_tts_url", "url": url})
             else:
